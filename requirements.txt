@@ -1,0 +1,13 @@
+# ERPSA - Equity Risk Predictor & Sentiment Analyzer
+# Core dependencies
+
+# SEC EDGAR API access
+edgartools>=0.30.0
+
+# HTML parsing (optional - pure Python fallback available)
+beautifulsoup4>=4.12.0
+
+# Future: NLP/Sentiment (uncomment when needed)
+# transformers>=4.30.0
+# torch>=2.0.0
+# nltk>=3.8.0
