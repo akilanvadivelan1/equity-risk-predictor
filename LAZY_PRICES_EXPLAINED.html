@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lazy Prices — Explained for a High School Student</title>
+    <style>
+        @media print {
+            body { font-size: 11pt; margin: 0.75in; }
+            .page-break { page-break-before: always; }
+            .no-print { display: none; }
+            h1 { font-size: 20pt; }
+            h2 { font-size: 16pt; }
+            h3 { font-size: 13pt; }
+            blockquote { border-left: 3px solid #333; }
+            a { color: #333; text-decoration: underline; }
+            .highlight-box { border: 2px solid #333 !important; background: #f5f5f5 !important; }
+            .key-insight { background: #f0f0f0 !important; border-left: 4px solid #333 !important; }
+        }
+
+        @media screen {
+            body { max-width: 800px; margin: 40px auto; padding: 0 20px; }
+        }
+
+        body {
+            font-family: Georgia, 'Times New Roman', serif;
+            line-height: 1.7;
+            color: #1a1a1a;
+            font-size: 12pt;
+        }
+
+        h1 {
+            font-size: 24pt;
+            text-align: center;
+            border-bottom: 3px solid #2c3e50;
+            padding-bottom: 15px;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            text-align: center;
+            font-style: italic;
+            color: #555;
+            margin-bottom: 30px;
+            font-size: 11pt;
+        }
+
+        h2 {
+            font-size: 18pt;
+            color: #2c3e50;
+            margin-top: 40px;
+            border-bottom: 1px solid #bdc3c7;
+            padding-bottom: 8px;
+        }
+
+        h3 {
+            font-size: 14pt;
+            color: #34495e;
+            margin-top: 25px;
+        }
+
+        blockquote {
+            border-left: 4px solid #3498db;
+            margin: 20px 0;
+            padding: 15px 20px;
+            background: #f8f9fa;
+            font-style: italic;
+            font-size: 11.5pt;
+        }
+
+        .highlight-box {
+            border: 2px solid #2980b9;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+            background: #eaf2f8;
+        }
+
+        .highlight-box h4 {
+            margin-top: 0;
+            color: #2c3e50;
+            font-size: 13pt;
+        }
+
+        .key-insight {
+            background: #fef9e7;
+            border-left: 5px solid #f39c12;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 5px 5px 0;
+        }
+
+        .key-insight strong {
+            color: #d35400;
+        }
+
+        .timeline {
+            font-family: 'Courier New', monospace;
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 20px 25px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 10.5pt;
+            line-height: 1.8;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 10.5pt;
+        }
+
+        th {
+            background: #2c3e50;
+            color: white;
+            padding: 10px 12px;
+            text-align: left;
+        }
+
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        tr:nth-child(even) { background: #f8f9fa; }
+
+        .analogy {
+            background: #e8f8f5;
+            border: 1px solid #1abc9c;
+            border-radius: 8px;
+            padding: 18px;
+            margin: 20px 0;
+        }
+
+        .analogy::before {
+            content: "Analogy: ";
+            font-weight: bold;
+            color: #16a085;
+        }
+
+        .bottom-line {
+            background: #2c3e50;
+            color: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin: 30px 0;
+            text-align: center;
+        }
+
+        .bottom-line p {
+            font-size: 14pt;
+            font-weight: bold;
+            margin: 0;
+        }
+
+        .sources {
+            font-size: 9.5pt;
+            color: #666;
+            border-top: 1px solid #ddd;
+            padding-top: 15px;
+            margin-top: 40px;
+        }
+
+        ul, ol { margin: 10px 0; padding-left: 25px; }
+        li { margin-bottom: 6px; }
+
+        .print-btn {
+            display: block;
+            margin: 20px auto;
+            padding: 12px 30px;
+            background: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 14pt;
+            cursor: pointer;
+        }
+
+        .print-btn:hover { background: #34495e; }
+
+        .toc {
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px 25px;
+            margin: 20px 0;
+        }
+
+        .toc h3 { margin-top: 0; }
+        .toc ol { margin: 0; }
+        .toc li { margin-bottom: 4px; font-size: 11pt; }
+    </style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">Print This Document</button>
+
+<h1>"Lazy Prices"</h1>
+<div class="subtitle">
+    A Harvard Research Paper — Explained for a High School Student<br>
+    <strong>Paper:</strong> "Lazy Prices" by Lauren Cohen, Christopher Malloy &amp; Quoc Nguyen<br>
+    <strong>Published:</strong> <em>Journal of Finance</em>, Volume 75, Issue 3, June 2020, pp. 1371–1415<br>
+    <strong>Free PDF:</strong> nber.org/system/files/working_papers/w25084/w25084.pdf
+</div>
+
+<div class="toc">
+    <h3>Table of Contents</h3>
+    <ol>
+        <li>The Simple Explanation (No Finance Background Needed)</li>
+        <li>Why Numbers Alone Aren't Enough</li>
+        <li>Why Do Companies Publish These Risks? (The Psychology)</li>
+        <li>The Academic Findings (Key Results)</li>
+        <li>The Bottom Line &amp; Vocabulary</li>
+    </ol>
+</div>
+
+<!-- ============================================================ -->
+<h2>Part 1: The Simple Explanation</h2>
+
+<h3>What's a 10-K?</h3>
+
+<p>Every year, every publicly-traded company in America (think Apple, Tesla, Target, Netflix) is <strong>legally required</strong> to file a document called a "10-K" with the government (the Securities and Exchange Commission, or SEC).</p>
+
+<p>Think of a 10-K like a very long, very detailed annual report card — but for a company. It typically runs <strong>50 to 200+ pages</strong> and includes:</p>
+<ul>
+    <li>How the business makes money</li>
+    <li>Financial statements (revenue, profit, debt, etc.)</li>
+    <li><strong>Item 1A: Risk Factors</strong> — a section where the company lists everything that could go wrong</li>
+</ul>
+
+<h3>The Key Insight: Copy-Paste is Actually a GOOD Sign</h3>
+
+<p>Here's the surprising discovery from this paper:</p>
+
+<p><strong>Most companies barely change their 10-K from one year to the next.</strong> They copy-paste last year's filing with minimal edits. The researchers call this "lazy" — but it turns out that <strong>laziness is a signal that everything is fine.</strong></p>
+
+<div class="key-insight">
+    <strong>The Breakthrough Finding:</strong> When a company DOES significantly change the words in their filing — especially the risk section — bad things are about to happen to that company.
+</div>
+
+<h3>An Analogy</h3>
+
+<div class="analogy">
+    Imagine your friend sends you the same "good morning" text every day for a year. You stop really reading it. Then one day, instead of "good morning!", they send "hey... we need to talk."
+    <br><br>
+    You'd immediately know something is different. Something changed. The <em>change itself</em> is the signal.
+    <br><br>
+    That's exactly what happens with corporate filings. The change in language IS the warning sign — not the language itself.
+</div>
+
+<h3>Why Don't Investors Notice?</h3>
+
+<p>This is the crazy part: <strong>almost nobody pays attention to these text changes.</strong></p>
+<ul>
+    <li>Wall Street analysts focus on the NUMBERS (revenue, earnings, stock price)</li>
+    <li>The filing is hundreds of pages of boring legal text</li>
+    <li>People assume the risk section is just "cover your butt" language that lawyers write</li>
+    <li>There's no dramatic announcement — the company just quietly files the document</li>
+</ul>
+
+<p>The researchers found that when companies change their filings significantly, the stock price <strong>doesn't react immediately</strong>. The bad news only shows up <strong>months later</strong> — through earnings misses, negative news, or even bankruptcies.</p>
+
+<p>This means the information was <em>hiding in plain sight</em> for months, and nobody bothered to read it.</p>
+
+<h3>The Result: 22% Per Year</h3>
+
+<div class="highlight-box">
+    <h4>The Trading Strategy</h4>
+    <ul>
+        <li><strong>BUY</strong> stocks of companies that DIDN'T change their filings (the "lazy" ones — things are fine)</li>
+        <li><strong>SELL (short)</strong> stocks of companies that DID change significantly (something's wrong)</li>
+    </ul>
+    <p>This strategy earned <strong>over 22% per year</strong> in abnormal returns. For context, the stock market averages about 10% per year. This strategy would have more than doubled the market's performance — just by reading what companies wrote.</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="page-break"></div>
+<h2>Part 2: Why Numbers Alone Aren't Enough</h2>
+
+<h3>What Are "Numerical Metrics"?</h3>
+
+<p>When people evaluate a company, they usually look at numbers like:</p>
+<ul>
+    <li><strong>Revenue</strong> — how much money the company brings in</li>
+    <li><strong>Earnings Per Share (EPS)</strong> — how much profit per share of stock</li>
+    <li><strong>Debt-to-Equity Ratio</strong> — how much the company owes vs. how much it's worth</li>
+    <li><strong>P/E Ratio</strong> — the stock price relative to earnings</li>
+</ul>
+
+<p>These are all <strong>backward-looking</strong>. They tell you what ALREADY happened.</p>
+
+<h3>The Problem: Numbers Are Like a Rearview Mirror</h3>
+
+<div class="analogy">
+    Imagine driving a car by ONLY looking in your rearview mirror. You can see perfectly where you've been, but you can't see the cliff ahead.
+    <br><br>
+    Financial numbers work the same way:
+    <br>
+    &bull; By the time revenue drops, the problem has already been happening for months<br>
+    &bull; By the time a bankruptcy shows up in the numbers, the company has been struggling for a year<br>
+    &bull; By the time debt becomes "critical," the damage is done
+</div>
+
+<h3>Why Text Leads Numbers</h3>
+
+<p>Here's the key chain of events:</p>
+
+<div class="timeline">
+    1. REALITY CHANGES &rarr; The company starts facing a new problem<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(supply chain breaks, lawsuit coming, market shifts)<br><br>
+    2. TEXT CHANGES &rarr; Lawyers and executives update the 10-K risk factors<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;to acknowledge the new reality (3-12 months BEFORE trouble)<br><br>
+    3. NUMBERS CHANGE &rarr; Revenue drops, profits fall, stock crashes<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(this is when most people finally notice)
+</div>
+
+<p><strong>The text changes BEFORE the numbers do</strong> because:</p>
+<ul>
+    <li>Companies KNOW about their problems before the problems show up in quarterly earnings</li>
+    <li>They are <strong>legally obligated</strong> to disclose risks they're aware of</li>
+    <li>But investors are focused on quarterly earnings calls and stock charts — not reading 200-page legal documents</li>
+</ul>
+
+<h3>A Real Example: Target ($TGT) in 2022</h3>
+
+<div class="highlight-box">
+    <h4>Case Study: Target Corporation</h4>
+    <ul>
+        <li><strong>Numbers said:</strong> Revenue was still growing in Q1 2022</li>
+        <li><strong>10-K text said:</strong> New language appeared about "excess inventory," "supply chain disruptions," and "rapidly changing consumer preferences"</li>
+        <li><strong>What happened next:</strong> Target's stock dropped <strong>24.9% in a single day</strong> when they finally reported the inventory problem in earnings</li>
+    </ul>
+    <p>The text was screaming "SOMETHING IS WRONG" months before the numbers caught up.</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="page-break"></div>
+<h2>Part 3: Why Do Companies Publish These Risks? (The Psychology)</h2>
+
+<h3>Reason 1: Legal Self-Defense ("You Can't Sue Us — We Warned You")</h3>
+
+<p>The #1 reason companies write risk factors is <strong>litigation protection.</strong></p>
+
+<p>In 1995, Congress passed the <strong>Private Securities Litigation Reform Act</strong>, which created a "safe harbor" for companies. Basically:</p>
+
+<blockquote>
+    If a company warns you about a risk in their filing, and that risk later happens and the stock drops, shareholders have a much harder time suing the company.
+</blockquote>
+
+<div class="analogy">
+    If a restaurant puts "May contain nuts" on their menu and you have an allergic reaction, you can't easily sue them — they warned you. Risk factors in a 10-K work the same way.
+</div>
+
+<p>Companies WANT to list every possible risk because each risk factor they write is essentially a <strong>legal shield</strong> against future lawsuits. Lawyers at top firms draft these sections specifically for this purpose.</p>
+
+<p><strong>This is why most risk factors stay the same year after year</strong> — the generic legal shields don't need to change.</p>
+
+<p><strong>But when NEW risks appear or OLD risks get rewritten in scarier language?</strong> That means something REAL has changed that the lawyers felt needed to be disclosed NOW.</p>
+
+<h3>Reason 2: SEC Mandate — The Government Requires It</h3>
+
+<p>Since 2005, the SEC has <strong>required</strong> all public companies to include an "Item 1A: Risk Factors" section in their 10-K. Companies must disclose "the most significant factors that make the company speculative or risky."</p>
+
+<p>If a company KNOWS about a significant risk and doesn't disclose it, they can face:</p>
+<ul>
+    <li>SEC enforcement actions (fines, sanctions)</li>
+    <li>Criminal fraud charges for officers</li>
+    <li>Massive shareholder lawsuits for material omissions</li>
+</ul>
+
+<div class="key-insight">
+    <strong>The Bind:</strong> Companies MUST tell you about new dangers, but they know that once they do, savvy investors will notice. Most companies try to bury the new language deep in a 100-page risk section, hoping nobody reads it.
+</div>
+
+<h3>Reason 3: Psychological Cover — "We Said So All Along"</h3>
+
+<p>There's a fascinating psychological game happening:</p>
+
+<p>When something bad eventually happens, executives want to be able to say: <em>"We disclosed this risk. It was right there on page 47 of our 10-K. Investors were warned."</em></p>
+
+<p>This creates a weird dynamic:</p>
+<ul>
+    <li>Companies want to disclose ENOUGH to be legally protected</li>
+    <li>But not so CLEARLY that investors panic and sell the stock immediately</li>
+    <li>So they use vague legal language, dense paragraphs, and bury key changes deep in the document</li>
+</ul>
+
+<p>The researchers' key finding is that investors are "inattentive" to these buried signals — the information flows into the stock price only when it later manifests through earnings announcements or news events.</p>
+
+<h3>Reason 4: Signaling Theory — Stability = Safety</h3>
+
+<p>From the paper's perspective:</p>
+<ul>
+    <li>Companies that DON'T change their filings are signaling: <em>"Business as usual, nothing new to worry about"</em></li>
+    <li>Companies that DO change are (often involuntarily) signaling: <em>"Our world has shifted, and our lawyers are making us tell you"</em></li>
+</ul>
+
+<p>The "lazy" companies — the ones just copy-pasting — are the ones where nothing has changed. <strong>Stability in the document = stability in the business.</strong></p>
+
+<!-- ============================================================ -->
+<div class="page-break"></div>
+<h2>Part 4: The Academic Findings (Key Results)</h2>
+
+<h3>What They Studied</h3>
+<ul>
+    <li>Complete history of quarterly (10-Q) and annual (10-K) filings by U.S. corporations from <strong>1995 to 2014</strong></li>
+    <li>Thousands of companies, hundreds of thousands of filings</li>
+    <li>Measured "similarity" between consecutive filings using text comparison algorithms</li>
+</ul>
+
+<h3>Key Finding #1: Changes Predict Bad Things</h3>
+
+<p>Companies that significantly change their filing language subsequently experience:</p>
+<ul>
+    <li><strong>Lower future earnings</strong> (profits decline)</li>
+    <li><strong>Lower profitability</strong> (margins shrink)</li>
+    <li><strong>More negative news announcements</strong></li>
+    <li><strong>Higher probability of bankruptcy</strong></li>
+</ul>
+
+<h3>Key Finding #2: No Immediate Stock Price Reaction</h3>
+
+<p>When a company files its changed 10-K, the stock price <strong>does not immediately drop</strong>. Investors don't react at the time of filing. The negative returns only accumulate over the following months when the problems finally surface through traditional channels (earnings calls, news, analyst downgrades).</p>
+
+<p>This is what economists call <strong>"investor inattention"</strong> — people literally don't read the filings.</p>
+
+<h3>Key Finding #3: The Trading Strategy Works</h3>
+
+<div class="highlight-box">
+    <h4>Portfolio Results</h4>
+    <ul>
+        <li><strong>Shorts "changers"</strong> (companies that rewrote their filings)</li>
+        <li><strong>Buys "non-changers"</strong> (companies that copy-pasted)</li>
+        <li>Earns up to <strong>188 basis points per month</strong> (that's 1.88% per month, or over <strong>22% per year</strong>)</li>
+        <li>This return is "abnormal" — meaning it's above and beyond what can be explained by market risk, size, value, or momentum factors</li>
+    </ul>
+</div>
+
+<h3>Key Finding #4: Changes Are Almost Always Negative</h3>
+
+<p>When companies DO change their language, the changes are overwhelmingly negative in tone. Companies rarely rewrite their risk factors to say "actually, things are BETTER now." Almost all significant textual changes introduce worse, scarier language.</p>
+
+<!-- ============================================================ -->
+<div class="page-break"></div>
+<h2>Part 5: Key Vocabulary</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>Term</th>
+            <th>Simple Definition</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>10-K</strong></td>
+            <td>A company's mandatory annual report filed with the SEC (government)</td>
+        </tr>
+        <tr>
+            <td><strong>Item 1A</strong></td>
+            <td>The "risk factors" section — a list of everything that could go wrong</td>
+        </tr>
+        <tr>
+            <td><strong>SEC</strong></td>
+            <td>Securities and Exchange Commission — the government agency that regulates stocks</td>
+        </tr>
+        <tr>
+            <td><strong>Safe Harbor</strong></td>
+            <td>A legal rule that protects companies from lawsuits if they disclosed risks in advance</td>
+        </tr>
+        <tr>
+            <td><strong>Boilerplate</strong></td>
+            <td>Copy-pasted generic text that never changes (legal filler)</td>
+        </tr>
+        <tr>
+            <td><strong>Abnormal Returns</strong></td>
+            <td>Profits above what the market normally gives you</td>
+        </tr>
+        <tr>
+            <td><strong>Short Selling</strong></td>
+            <td>Betting that a stock will go DOWN (you profit if the price falls)</td>
+        </tr>
+        <tr>
+            <td><strong>Basis Points</strong></td>
+            <td>1/100th of a percent (188 basis points = 1.88%)</td>
+        </tr>
+        <tr>
+            <td><strong>Textual Analysis</strong></td>
+            <td>Using computers to analyze and compare written documents</td>
+        </tr>
+        <tr>
+            <td><strong>Investor Inattention</strong></td>
+            <td>People not paying attention to information that's publicly available</td>
+        </tr>
+        <tr>
+            <td><strong>Forward-Looking</strong></td>
+            <td>Information that predicts or warns about the future (vs. historical data)</td>
+        </tr>
+        <tr>
+            <td><strong>Material Risk</strong></td>
+            <td>A risk important enough that it could significantly affect the company's stock price</td>
+        </tr>
+    </tbody>
+</table>
+
+<!-- ============================================================ -->
+
+<div class="bottom-line">
+    <p>"Numbers tell you where a company HAS BEEN.<br>Text tells you where it's GOING."</p>
+</div>
+
+<p style="text-align: center; font-size: 11pt; margin-top: 15px;">The reason this works is deeply human:</p>
+<ul>
+    <li>Humans are lazy — we don't read boring 200-page legal documents</li>
+    <li>Companies are required by law to warn us — but they bury the warnings</li>
+    <li>The warnings come BEFORE the numbers change — text leads, numbers follow</li>
+    <li>A computer that reads every word, every year, and compares them... has an enormous advantage over human investors who just look at stock charts</li>
+</ul>
+
+<!-- ============================================================ -->
+<div class="page-break"></div>
+<h2>Discussion Questions</h2>
+
+<p><em>To help test your understanding:</em></p>
+
+<ol>
+    <li><strong>Why is it called "Lazy Prices"?</strong> What does "lazy" refer to — the companies, the investors, or both?</li>
+    <li><strong>Rearview mirror analogy:</strong> Can you think of another situation in life where people focus too much on past data and miss future warning signs?</li>
+    <li><strong>The legal game:</strong> Why would a company deliberately write a risk factor in confusing legal language instead of plain English?</li>
+    <li><strong>If everyone read this paper,</strong> would the strategy still work? Why or why not? (Hint: think about what happens when everyone notices the same signal)</li>
+    <li><strong>Compare these two sentences from a 10-K:</strong>
+        <ul>
+            <li>2021: <em>"We face competition from other retailers."</em></li>
+            <li>2022: <em>"We face intense and rapidly increasing competition from online retailers that may significantly erode our market share and compress our profit margins."</em></li>
+        </ul>
+        What changed? What might this signal about the company's future?
+    </li>
+    <li><strong>Ethical question:</strong> If a company's executives KNOW bad things are coming but bury the warning on page 147 of a 200-page document, is that ethical? They technically "disclosed" it — but did they really inform investors?</li>
+</ol>
+
+<!-- ============================================================ -->
+<div class="sources">
+    <h3>Sources &amp; Further Reading</h3>
+    <ul>
+        <li>Cohen, L., Malloy, C., &amp; Nguyen, Q. (2020). "Lazy Prices." <em>Journal of Finance</em>, 75(3), 1371-1415.</li>
+        <li>Free PDF: nber.org/system/files/working_papers/w25084/w25084.pdf</li>
+        <li>SSRN Preprint: papers.ssrn.com/sol3/papers.cfm?abstract_id=1658471</li>
+        <li>Harvard DASH Repository: dash.harvard.edu/entities/publication/576a041c-19c4-47d8-b28d-2a5ef079f54f</li>
+        <li>SEC Safe Harbor: Private Securities Litigation Reform Act of 1995</li>
+        <li>SEC risk factor requirements: Regulation S-K, Item 105</li>
+    </ul>
+    <p><em>Content was rephrased and summarized for educational purposes in compliance with licensing restrictions. This document is not investment advice.</em></p>
+</div>
+
+<button class="print-btn no-print" onclick="window.print()">Print This Document</button>
+
+</body>
+</html>
