@@ -514,8 +514,9 @@ class ERPSAHandler(BaseHTTPRequestHandler):
 # =========================================================
 
 def main():
-    port = 5000
+    port = 8888
     server = HTTPServer(('0.0.0.0', port), ERPSAHandler)
+    import webbrowser
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║  ERPSA — Equity Risk Predictor & Sentiment Analyzer        ║
@@ -531,6 +532,8 @@ def main():
 ║  Press Ctrl+C to stop                                      ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
+    # Auto-open browser
+    webbrowser.open(f'http://localhost:{port}')
     try:
         server.serve_forever()
     except KeyboardInterrupt:
