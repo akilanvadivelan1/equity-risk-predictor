@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
-# =========================================================
-# ERPSA — Web Interface (Flask)
-# =========================================================
-# A simple web UI to demonstrate the risk scoring engine.
-# Allows users to input risk factor text from two years and
-# see the scored results.
-# =========================================================
+"""
+ERPSA — Equity Risk Predictor & Sentiment Analyzer
+Web Application v1.0
+
+A complete web interface that:
+1. Fetches real 10-K filings from SEC EDGAR (free, no API key)
+2. Extracts Item 1A (Risk Factors) automatically
+3. Compares risk language across years
+4. Scores and explains each risk in plain English
+
+Run: python3 app.py
+Open: http://localhost:8888
+"""
 
 import sys
-sys.path.insert(0, '.')
-
+import os
+import re
 import json
+import time
+import urllib.request
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, quote
+from typing import Optional, Dict, List, Tuple
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from text_cleaning import clean_text_preserve_structure
 from risk_section_parser import parse_risk_sections
@@ -24,43 +36,315 @@ from lm_dictionary import get_dictionary
 
 
 # =========================================================
-# Sample Data (for demo mode)
+# SEC EDGAR Integration
 # =========================================================
 
-SAMPLE_CURRENT = """CYBERSECURITY AND DATA PRIVACY THREATS
+SEC_HEADERS = {
+    'User-Agent': 'ERPSA Research Tool admin@example.com',
+    'Accept': 'application/json',
+}
 
-We face increasingly severe and sophisticated cybersecurity threats that could result in catastrophic data breaches, material financial losses, and irreparable reputational damage. State-sponsored threat actors and organized criminal groups have significantly escalated attacks against retail companies. We may be unable to adequately defend against these threats despite substantial investments in security infrastructure. Any breach could expose us to costly litigation, regulatory penalties, and loss of customer trust that may materially impair our long-term financial performance. The frequency and severity of attempted intrusions has increased substantially over the past twelve months.
+# Cache to avoid re-fetching
+_filing_cache: Dict[str, str] = {}
 
-INVENTORY MANAGEMENT AND SUPPLY CHAIN DISRUPTION
 
-We face significant risks related to our ability to effectively manage inventory levels in an environment of unprecedented supply chain disruption. Global shipping constraints, port congestion, and labor shortages have materially impaired our logistics operations and may continue to do so. We may be unable to accurately forecast consumer demand, which could result in excess inventory requiring significant markdowns that adversely affect our gross margins, or inventory shortages that impair our ability to serve customers. The financial impact of these disruptions could be substantial and may materially affect our results of operations and financial condition.
+def get_company_cik(ticker: str) -> Optional[str]:
+    """Look up company CIK number from ticker."""
+    url = 'https://www.sec.gov/files/company_tickers.json'
+    req = urllib.request.Request(url, headers=SEC_HEADERS)
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        data = json.loads(resp.read().decode())
+        ticker_upper = ticker.upper()
+        for entry in data.values():
+            if entry.get('ticker', '').upper() == ticker_upper:
+                return str(entry['cik_str']).zfill(10)
+    except Exception as e:
+        print(f"  [EDGAR] Error looking up ticker {ticker}: {e}")
+    return None
 
-GENERAL ECONOMIC CONDITIONS
 
-Our business is subject to the risks arising from adverse changes in domestic and global economic conditions. If economic conditions deteriorate, consumer spending may decline, which could adversely affect our results of operations.
+def get_10k_filings(cik: str) -> List[Dict]:
+    """Get list of 10-K filings for a company."""
+    url = f'https://data.sec.gov/submissions/CIK{cik}.json'
+    req = urllib.request.Request(url, headers=SEC_HEADERS)
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        data = json.loads(resp.read().decode())
 
-COMPETITION
+        filings = []
+        recent = data.get('filings', {}).get('recent', {})
+        forms = recent.get('form', [])
+        dates = recent.get('filingDate', [])
+        accessions = recent.get('accessionNumber', [])
+        primary_docs = recent.get('primaryDocument', [])
 
-The retail industry is highly competitive. We compete with other mass merchandisers, department stores, and online retailers on the basis of price, quality, and convenience."""
+        for i, form in enumerate(forms):
+            if form in ('10-K', '10-K/A'):
+                filing_date = dates[i] if i < len(dates) else ''
+                year = int(filing_date[:4]) if filing_date else 0
+                filings.append({
+                    'form': form,
+                    'date': filing_date,
+                    'year': year,
+                    'accession': accessions[i].replace('-', '') if i < len(accessions) else '',
+                    'accession_raw': accessions[i] if i < len(accessions) else '',
+                    'primary_doc': primary_docs[i] if i < len(primary_docs) else '',
+                    'cik': cik,
+                })
 
-SAMPLE_PRIOR = """CYBERSECURITY RISKS
+        return filings[:15]  # Last 15 filings
+    except Exception as e:
+        print(f"  [EDGAR] Error fetching filings for CIK {cik}: {e}")
+    return []
 
-We face cybersecurity risks common to companies in our industry. We invest in technology and maintain protocols to protect our systems and customer information from unauthorized access. We continue to monitor emerging threats.
 
-GENERAL ECONOMIC CONDITIONS
+def fetch_filing_text(filing: Dict) -> str:
+    """Download and extract Item 1A from a 10-K filing."""
+    cache_key = filing.get('accession', '')
+    if cache_key in _filing_cache:
+        return _filing_cache[cache_key]
 
-Our business is subject to the risks arising from adverse changes in domestic and global economic conditions. If economic conditions deteriorate, consumer spending may decline, which could adversely affect our results of operations.
+    cik = filing['cik']
+    accession = filing['accession']
+    primary_doc = filing['primary_doc']
 
-COMPETITION
+    # Try to get the filing document
+    url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{primary_doc}"
+    print(f"  [EDGAR] Fetching: {url}")
 
-The retail industry is highly competitive. We compete with other mass merchandisers, department stores, and online retailers on the basis of price, quality, and convenience."""
+    req = urllib.request.Request(url, headers=SEC_HEADERS)
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        html = resp.read().decode('utf-8', errors='ignore')
+
+        # Extract Item 1A section
+        item1a_text = extract_item_1a(html)
+
+        if item1a_text and len(item1a_text) > 500:
+            _filing_cache[cache_key] = item1a_text
+            return item1a_text
+        else:
+            # Fallback: return a message
+            return f"[Could not extract Item 1A from this filing. The document may use a non-standard format. Filing URL: {url}]"
+    except Exception as e:
+        print(f"  [EDGAR] Error fetching document: {e}")
+        return f"[Error fetching filing: {str(e)}]"
+
+
+def extract_item_1a(html: str) -> str:
+    """Extract Item 1A (Risk Factors) section from a 10-K HTML document."""
+    # Strategy: find "Item 1A" header, then grab text until "Item 1B" or "Item 2"
+
+    # Common patterns for Item 1A start
+    start_patterns = [
+        re.compile(r'(?:Item|ITEM)\s*1A[\.\s\—\-]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)', re.IGNORECASE),
+        re.compile(r'>Item\s*1A\b.*?Risk\s*Factor', re.IGNORECASE | re.DOTALL),
+    ]
+
+    # Common patterns for Item 1A end
+    end_patterns = [
+        re.compile(r'(?:Item|ITEM)\s*1B[\.\s\—\-]', re.IGNORECASE),
+        re.compile(r'(?:Item|ITEM)\s*2[\.\s\—\-]', re.IGNORECASE),
+    ]
+
+    text = html
+
+    # Find start
+    start_pos = None
+    for pattern in start_patterns:
+        match = pattern.search(text)
+        if match:
+            start_pos = match.start()
+            break
+
+    if start_pos is None:
+        return ""
+
+    # Find end (search after start)
+    end_pos = len(text)
+    for pattern in end_patterns:
+        match = pattern.search(text, start_pos + 100)
+        if match:
+            end_pos = min(end_pos, match.start())
+            break
+
+    # Extract the section
+    section_html = text[start_pos:end_pos]
+
+    # Clean HTML
+    cleaned = clean_text_preserve_structure(section_html)
+
+    # Remove the "Item 1A. Risk Factors" header itself
+    cleaned = re.sub(r'^.*?(?:Risk\s*Factors|RISK\s*FACTORS)\s*', '', cleaned, count=1)
+
+    # Limit to reasonable size (some filings are enormous)
+    if len(cleaned) > 100000:
+        cleaned = cleaned[:100000]
+
+    return cleaned.strip()
+
+
+def get_available_years(ticker: str) -> Dict:
+    """Get available 10-K filing years for a ticker."""
+    cik = get_company_cik(ticker)
+    if not cik:
+        return {'error': f'Ticker "{ticker}" not found in SEC EDGAR.', 'years': [], 'company': ''}
+
+    # Get company name
+    url = f'https://data.sec.gov/submissions/CIK{cik}.json'
+    req = urllib.request.Request(url, headers=SEC_HEADERS)
+    company_name = ticker.upper()
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        data = json.loads(resp.read().decode())
+        company_name = data.get('name', ticker.upper())
+    except:
+        pass
+
+    filings = get_10k_filings(cik)
+    years = []
+    for f in filings:
+        if f['year'] > 0:
+            years.append({
+                'year': f['year'],
+                'date': f['date'],
+                'form': f['form'],
+            })
+
+    return {
+        'ticker': ticker.upper(),
+        'company': company_name,
+        'cik': cik,
+        'years': years,
+        'filings': filings,
+    }
+
 
 
 # =========================================================
-# HTML Template
+# Risk Explanation Generator
 # =========================================================
 
-HTML_PAGE = """<!DOCTYPE html>
+def generate_risk_explanation(risk_score, classification) -> str:
+    """Generate a plain-English explanation of why a risk scored the way it did."""
+    prob = risk_score.preliminary_probability
+    status = risk_score.status
+    title = risk_score.title
+
+    explanation_parts = []
+
+    # Status-based opening
+    if status == RiskChangeStatus.NEW:
+        explanation_parts.append(
+            f"This is a <strong>brand new risk</strong> that did not exist in last year's filing. "
+            f"When a company adds an entirely new risk disclosure, it means something has changed in their business "
+            f"environment that their lawyers felt MUST be reported to investors. "
+            f"According to the 'Lazy Prices' research, new disclosures are among the strongest warning signals."
+        )
+    elif status == RiskChangeStatus.MODIFIED:
+        sim = risk_score.textual_detail.body_similarity if risk_score.textual_detail else 0
+        if sim < 0.4:
+            explanation_parts.append(
+                f"This risk was <strong>dramatically rewritten</strong> from last year (only {sim*100:.0f}% similar to prior version). "
+                f"A major rewrite means the company's exposure to this risk has fundamentally changed — they couldn't just copy-paste "
+                f"last year's language because the situation is significantly different now."
+            )
+        else:
+            explanation_parts.append(
+                f"This risk was <strong>modified</strong> from last year ({sim*100:.0f}% similar to prior version). "
+                f"The company kept the same general risk topic but updated the language — "
+                f"often adding stronger warnings, new specifics, or escalating the severity of the threat."
+            )
+
+        # Sentence-level detail
+        if risk_score.textual_detail:
+            added = risk_score.textual_detail.added_sentence_count
+            rewritten = risk_score.textual_detail.rewritten_sentence_count
+            if added > 0 or rewritten > 0:
+                parts = []
+                if added > 0:
+                    parts.append(f"{added} entirely new sentence{'s' if added > 1 else ''}")
+                if rewritten > 0:
+                    parts.append(f"{rewritten} rewritten sentence{'s' if rewritten > 1 else ''}")
+                explanation_parts.append(
+                    f"Specifically: {' and '.join(parts)} were detected in this section."
+                )
+
+    elif status == RiskChangeStatus.UNCHANGED:
+        explanation_parts.append(
+            f"This risk is <strong>unchanged boilerplate</strong> — the exact same language as last year. "
+            f"No signal here. Companies copy-paste risks that haven't evolved, which actually means things are stable."
+        )
+        return ' '.join(explanation_parts)
+
+    elif status == RiskChangeStatus.REMOVED:
+        explanation_parts.append(
+            f"This risk was <strong>removed</strong> — it existed last year but is gone now. "
+            f"This could mean the risk resolved (good) or the company is trying to minimize attention to it (concerning)."
+        )
+        return ' '.join(explanation_parts)
+
+    # Sentiment-based explanation
+    if risk_score.sentiment_detail and risk_score.sentiment_detail.changed_sentiment:
+        sent = risk_score.sentiment_detail.changed_sentiment
+        if sent.is_heavily_negative:
+            explanation_parts.append(
+                f"The language used is <strong>heavily negative</strong> — words like 'adverse,' 'impair,' 'unable,' "
+                f"'material loss' appear frequently ({sent.negative_density*100:.1f}% of words are negative). "
+                f"This is significantly above normal corporate disclosure levels."
+            )
+        if sent.is_highly_uncertain:
+            explanation_parts.append(
+                f"There is <strong>high uncertainty language</strong> — words like 'may,' 'could,' 'uncertain,' "
+                f"'unpredictable' ({sent.uncertainty_density*100:.1f}% density). "
+                f"The company is hedging heavily about what might happen."
+            )
+        if sent.is_constrained:
+            explanation_parts.append(
+                f"The text contains <strong>constraining language</strong> — words indicating the company feels "
+                f"limited, obligated, or restricted in how it can respond to this risk."
+            )
+
+    # Tone delta for MODIFIED
+    if (status == RiskChangeStatus.MODIFIED and
+            risk_score.sentiment_detail and
+            risk_score.sentiment_detail.sentiment_delta):
+        delta = risk_score.sentiment_detail.sentiment_delta
+        if delta.tone_worsened:
+            explanation_parts.append(
+                f"<strong>The tone has worsened</strong> compared to last year — the language shifted from relatively "
+                f"neutral to more alarming. This year-over-year darkening of tone is a key signal from the research."
+            )
+
+    # Probability-based conclusion
+    if prob >= 70:
+        explanation_parts.append(
+            f"<strong>Bottom line:</strong> At {prob:.0f}%, this is a very high-priority signal. "
+            f"Based on academic research, risks scoring this high have historically preceded "
+            f"significant negative events (stock drops, earnings misses, or operational crises) within 12 months."
+        )
+    elif prob >= 50:
+        explanation_parts.append(
+            f"<strong>Bottom line:</strong> At {prob:.0f}%, this deserves close attention. "
+            f"The combination of significant textual changes and negative language suggests "
+            f"this risk is evolving in a concerning direction."
+        )
+    elif prob >= 25:
+        explanation_parts.append(
+            f"<strong>Bottom line:</strong> At {prob:.0f}%, this is a moderate signal worth monitoring. "
+            f"Some changes detected but not yet at crisis-level language."
+        )
+
+    return ' '.join(explanation_parts)
+
+
+
+# =========================================================
+# HTML Templates
+# =========================================================
+
+HOME_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -68,279 +352,329 @@ HTML_PAGE = """<!DOCTYPE html>
     <title>ERPSA - Equity Risk Predictor</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f1419;
-            color: #e1e8ed;
-            min-height: 100vh;
-        }
-        .header {
-            background: linear-gradient(135deg, #1a2332 0%, #0d1b2a 100%);
-            border-bottom: 1px solid #2d3748;
-            padding: 20px 40px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .header h1 {
-            font-size: 24px;
-            color: #63b3ed;
-            font-weight: 700;
-        }
-        .header h1 span { color: #a0aec0; font-weight: 400; }
-        .header .badge {
-            background: #2d3748;
-            color: #68d391;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-        }
-        .container { max-width: 1400px; margin: 0 auto; padding: 30px 40px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 30px; }
-        .panel {
-            background: #1a2332;
-            border: 1px solid #2d3748;
-            border-radius: 12px;
-            padding: 24px;
-        }
-        .panel h3 {
-            color: #a0aec0;
-            font-size: 13px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 12px;
-        }
-        .panel h3 .year { color: #63b3ed; }
-        textarea {
-            width: 100%;
-            height: 280px;
-            background: #0f1419;
-            border: 1px solid #2d3748;
-            border-radius: 8px;
-            color: #e1e8ed;
-            padding: 16px;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 12px;
-            line-height: 1.6;
-            resize: vertical;
-        }
-        textarea:focus { outline: none; border-color: #63b3ed; }
-        .controls {
-            display: flex;
-            gap: 16px;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-        .btn {
-            padding: 12px 28px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #3182ce 0%, #2b6cb0 100%);
-            color: white;
-        }
-        .btn-primary:hover { background: linear-gradient(135deg, #4299e1 0%, #3182ce 100%); transform: translateY(-1px); }
-        .btn-secondary {
-            background: #2d3748;
-            color: #a0aec0;
-        }
-        .btn-secondary:hover { background: #4a5568; color: #e1e8ed; }
-        .ticker-input {
-            background: #0f1419;
-            border: 1px solid #2d3748;
-            border-radius: 8px;
-            color: #e1e8ed;
-            padding: 10px 16px;
-            font-size: 14px;
-            width: 100px;
-        }
-        .ticker-input:focus { outline: none; border-color: #63b3ed; }
-        label { color: #a0aec0; font-size: 13px; margin-right: 8px; }
-
-        /* Results */
-        .results { display: none; }
-        .results.show { display: block; }
-        .results-header {
-            background: linear-gradient(135deg, #1a365d 0%, #1a2332 100%);
-            border: 1px solid #2d3748;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 20px;
-        }
-        .results-header h2 { color: #63b3ed; margin-bottom: 12px; }
-        .stats { display: flex; gap: 24px; flex-wrap: wrap; }
-        .stat {
-            background: #0f1419;
-            border-radius: 8px;
-            padding: 12px 20px;
-            min-width: 140px;
-        }
-        .stat .value { font-size: 24px; font-weight: 700; color: #e1e8ed; }
-        .stat .label { font-size: 11px; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; }
-
-        .risk-card {
-            background: #1a2332;
-            border: 1px solid #2d3748;
-            border-radius: 12px;
-            padding: 20px 24px;
-            margin-bottom: 16px;
-            border-left: 4px solid #4a5568;
-        }
-        .risk-card.very-high { border-left-color: #e53e3e; }
-        .risk-card.high { border-left-color: #ed8936; }
-        .risk-card.medium { border-left-color: #ecc94b; }
-        .risk-card.low { border-left-color: #68d391; }
-        .risk-card .title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-        .risk-card .meta { display: flex; gap: 16px; font-size: 12px; color: #a0aec0; }
-        .risk-card .probability {
-            font-size: 28px;
-            font-weight: 700;
-            float: right;
-            margin-top: -5px;
-        }
-        .risk-card .probability.very-high { color: #fc8181; }
-        .risk-card .probability.high { color: #f6ad55; }
-        .risk-card .probability.medium { color: #f6e05e; }
-        .risk-card .probability.low { color: #68d391; }
-        .risk-card .bar {
-            height: 6px;
-            background: #2d3748;
-            border-radius: 3px;
-            margin-top: 12px;
-            overflow: hidden;
-        }
-        .risk-card .bar-fill {
-            height: 100%;
-            border-radius: 3px;
-            transition: width 0.8s ease;
-        }
-        .risk-card .bar-fill.very-high { background: linear-gradient(90deg, #e53e3e, #fc8181); }
-        .risk-card .bar-fill.high { background: linear-gradient(90deg, #dd6b20, #f6ad55); }
-        .risk-card .bar-fill.medium { background: linear-gradient(90deg, #d69e2e, #f6e05e); }
-        .risk-card .bar-fill.low { background: linear-gradient(90deg, #38a169, #68d391); }
-
-        .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        .status-badge.new { background: #2d3748; color: #fc8181; }
-        .status-badge.modified { background: #2d3748; color: #f6ad55; }
-        .status-badge.unchanged { background: #2d3748; color: #68d391; }
-        .status-badge.removed { background: #2d3748; color: #a0aec0; }
-
-        .signal-detail {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            margin-top: 10px;
-            font-size: 12px;
-        }
-        .signal-detail .signal {
-            background: #0f1419;
-            padding: 6px 10px;
-            border-radius: 4px;
-        }
-        .signal-detail .signal-name { color: #a0aec0; }
-        .signal-detail .signal-value { color: #e1e8ed; font-weight: 600; }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #63b3ed;
-            display: none;
-        }
-        .loading.show { display: block; }
-
-        .footer {
-            text-align: center;
-            padding: 30px;
-            color: #4a5568;
-            font-size: 12px;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
+        .nav { background: #111827; border-bottom: 1px solid #1f2937; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; }
+        .nav h1 { font-size: 20px; color: #60a5fa; }
+        .nav a { color: #9ca3af; text-decoration: none; margin-left: 24px; font-size: 14px; }
+        .nav a:hover { color: #60a5fa; }
+        .hero { text-align: center; padding: 80px 40px 60px; max-width: 900px; margin: 0 auto; }
+        .hero h2 { font-size: 42px; font-weight: 700; margin-bottom: 20px; line-height: 1.2; }
+        .hero h2 span { color: #60a5fa; }
+        .hero p { font-size: 18px; color: #9ca3af; line-height: 1.7; margin-bottom: 30px; }
+        .hero .cta { display: inline-block; padding: 14px 36px; background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; transition: all 0.2s; }
+        .hero .cta:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(59,130,246,0.3); }
+        .how-it-works { max-width: 1000px; margin: 0 auto; padding: 60px 40px; }
+        .how-it-works h3 { text-align: center; font-size: 28px; margin-bottom: 40px; color: #f1f5f9; }
+        .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+        .step { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; text-align: center; }
+        .step .num { width: 40px; height: 40px; background: #1e3a5f; color: #60a5fa; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-weight: 700; }
+        .step h4 { color: #f1f5f9; margin-bottom: 10px; font-size: 16px; }
+        .step p { color: #9ca3af; font-size: 14px; line-height: 1.6; }
+        .research { max-width: 800px; margin: 0 auto; padding: 40px; }
+        .research .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; margin-bottom: 20px; }
+        .research .card h4 { color: #60a5fa; margin-bottom: 8px; }
+        .research .card p { color: #9ca3af; font-size: 14px; line-height: 1.6; }
+        .research .card .stat { font-size: 32px; font-weight: 700; color: #f59e0b; }
+        .footer { text-align: center; padding: 40px; color: #4b5563; font-size: 12px; border-top: 1px solid #1f2937; margin-top: 40px; }
+        @media (max-width: 768px) { .steps { grid-template-columns: 1fr; } .hero h2 { font-size: 28px; } }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>ERPSA <span>Equity Risk Predictor & Sentiment Analyzer</span></h1>
-        <span class="badge">Signals 1+2 Active</span>
+    <div class="nav">
+        <h1>ERPSA</h1>
+        <div>
+            <a href="/">Home</a>
+            <a href="/analyze">Analyze</a>
+        </div>
+    </div>
+
+    <div class="hero">
+        <h2>Predict Corporate Risk<br><span>Before the Numbers Show It</span></h2>
+        <p>
+            ERPSA reads what companies are legally forced to tell you in their SEC filings,
+            detects when their language shifts from routine to alarming, and scores the probability
+            of bad things happening — months before Wall Street notices.
+        </p>
+        <a href="/analyze" class="cta">Start Analysis</a>
+    </div>
+
+    <div class="how-it-works">
+        <h3>How It Works</h3>
+        <div class="steps">
+            <div class="step">
+                <div class="num">1</div>
+                <h4>Enter a Ticker</h4>
+                <p>Type any publicly-traded company's stock ticker (like AAPL, TSLA, TGT). We pull their actual 10-K filings directly from the SEC.</p>
+            </div>
+            <div class="step">
+                <div class="num">2</div>
+                <h4>Pick Two Years</h4>
+                <p>Choose which years to compare. The system extracts the "Risk Factors" section from each filing and compares them word-by-word.</p>
+            </div>
+            <div class="step">
+                <div class="num">3</div>
+                <h4>See the Signals</h4>
+                <p>Get a scored breakdown of every risk: what changed, how severe the language is, and what it means in plain English. High scores = danger ahead.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="research">
+        <div class="card">
+            <div class="stat">22%/year</div>
+            <h4>Academic Backing: "Lazy Prices" (Harvard, 2020)</h4>
+            <p>A portfolio strategy that simply buys stocks of companies with unchanged filings and sells those with changed filings earned 22% per year in abnormal returns. The research proves that textual changes predict future problems — but almost nobody reads these documents.</p>
+        </div>
+        <div class="card">
+            <h4>Why This Works</h4>
+            <p>Companies are legally required to disclose risks. They KNOW about problems before the numbers show it. But they bury the warnings in 200-page documents using dense legal language. A computer that reads everything, every year, and measures what changed — has an enormous edge over humans who just look at stock prices.</p>
+        </div>
+    </div>
+
+    <div class="footer">
+        ERPSA v1.0 | Built on: Cohen et al. "Lazy Prices" (2020) + Loughran & McDonald Financial Sentiment (2011)<br>
+        Data from SEC EDGAR (free, public) | Not investment advice
+    </div>
+</body>
+</html>"""
+
+
+
+ANALYZE_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ERPSA - Analyze</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
+        .nav { background: #111827; border-bottom: 1px solid #1f2937; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; }
+        .nav h1 { font-size: 20px; color: #60a5fa; }
+        .nav a { color: #9ca3af; text-decoration: none; margin-left: 24px; font-size: 14px; }
+        .nav a:hover { color: #60a5fa; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 40px; }
+        h2 { font-size: 28px; margin-bottom: 8px; }
+        .subtitle { color: #9ca3af; margin-bottom: 30px; font-size: 15px; }
+
+        .input-section { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; margin-bottom: 24px; }
+        .input-section h3 { color: #60a5fa; margin-bottom: 16px; font-size: 16px; }
+        .form-row { display: flex; gap: 16px; align-items: end; flex-wrap: wrap; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        input, select { background: #0a0e17; border: 1px solid #374151; border-radius: 8px; color: #e2e8f0; padding: 10px 14px; font-size: 14px; }
+        input:focus, select:focus { outline: none; border-color: #60a5fa; }
+        select { min-width: 160px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .btn-blue { background: #3b82f6; color: white; }
+        .btn-blue:hover { background: #2563eb; }
+        .btn-blue:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
+        .btn-green { background: #10b981; color: white; }
+        .btn-green:hover { background: #059669; }
+        .btn-gray { background: #374151; color: #9ca3af; }
+        .btn-gray:hover { background: #4b5563; }
+
+        .status { margin-top: 12px; font-size: 13px; color: #9ca3af; min-height: 20px; }
+        .status.error { color: #f87171; }
+        .status.success { color: #34d399; }
+
+        .results { display: none; margin-top: 30px; }
+        .results.show { display: block; }
+        .results-header { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+        .results-header h3 { color: #60a5fa; margin-bottom: 12px; font-size: 18px; }
+        .stats-row { display: flex; gap: 16px; flex-wrap: wrap; }
+        .stat-box { background: #0a0e17; border-radius: 8px; padding: 14px 20px; min-width: 130px; }
+        .stat-box .value { font-size: 22px; font-weight: 700; }
+        .stat-box .label { font-size: 11px; color: #9ca3af; text-transform: uppercase; }
+
+        .risk-card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin-bottom: 16px; border-left: 5px solid #374151; transition: all 0.3s; }
+        .risk-card:hover { border-color: #60a5fa; }
+        .risk-card.very-high { border-left-color: #ef4444; }
+        .risk-card.high { border-left-color: #f97316; }
+        .risk-card.medium-high { border-left-color: #eab308; }
+        .risk-card.medium { border-left-color: #a3e635; }
+        .risk-card.low { border-left-color: #22c55e; }
+        .risk-card .top-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+        .risk-card .title { font-size: 16px; font-weight: 600; flex: 1; margin-right: 16px; }
+        .risk-card .score { font-size: 32px; font-weight: 700; line-height: 1; }
+        .risk-card .score.very-high { color: #fca5a5; }
+        .risk-card .score.high { color: #fdba74; }
+        .risk-card .score.medium-high { color: #fde047; }
+        .risk-card .score.medium { color: #d9f99d; }
+        .risk-card .score.low { color: #86efac; }
+
+        .risk-card .badges { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+        .badge.new { background: #7f1d1d; color: #fca5a5; }
+        .badge.modified { background: #78350f; color: #fdba74; }
+        .badge.unchanged { background: #14532d; color: #86efac; }
+        .badge.removed { background: #1f2937; color: #9ca3af; }
+        .badge.level { background: #1e3a5f; color: #93c5fd; }
+
+        .risk-card .explanation { background: #0a0e17; border-radius: 8px; padding: 16px; margin-top: 12px; font-size: 14px; line-height: 1.7; color: #d1d5db; }
+        .risk-card .explanation strong { color: #fbbf24; }
+
+        .risk-card .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+        .signal-item { background: #0a0e17; padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+        .signal-item .name { color: #9ca3af; }
+        .signal-item .val { color: #e2e8f0; font-weight: 600; }
+
+        .bar { height: 8px; background: #1f2937; border-radius: 4px; margin-top: 10px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 4px; transition: width 1s ease; }
+        .bar-fill.very-high { background: linear-gradient(90deg, #dc2626, #f87171); }
+        .bar-fill.high { background: linear-gradient(90deg, #ea580c, #fb923c); }
+        .bar-fill.medium-high { background: linear-gradient(90deg, #ca8a04, #facc15); }
+        .bar-fill.medium { background: linear-gradient(90deg, #65a30d, #a3e635); }
+        .bar-fill.low { background: linear-gradient(90deg, #16a34a, #4ade80); }
+
+        .loading-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(10,14,23,0.85); z-index: 1000; align-items: center; justify-content: center; flex-direction: column; }
+        .loading-overlay.show { display: flex; }
+        .spinner { width: 48px; height: 48px; border: 4px solid #1f2937; border-top-color: #60a5fa; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { margin-top: 16px; color: #9ca3af; font-size: 14px; }
+
+        .footer { text-align: center; padding: 30px; color: #4b5563; font-size: 12px; margin-top: 40px; }
+        @media (max-width: 768px) { .form-row { flex-direction: column; } .signals { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <h1>ERPSA</h1>
+        <div>
+            <a href="/">Home</a>
+            <a href="/analyze">Analyze</a>
+        </div>
     </div>
 
     <div class="container">
-        <div class="grid">
-            <div class="panel">
-                <h3>Current Year <span class="year">(FY2022)</span> — Item 1A Risk Factors</h3>
-                <textarea id="current-text" placeholder="Paste current year's Item 1A risk factor text here..."></textarea>
+        <h2>Risk Factor Analysis</h2>
+        <p class="subtitle">Enter a stock ticker and select years to compare their 10-K risk factor disclosures.</p>
+
+        <div class="input-section">
+            <h3>Step 1: Look Up Company</h3>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Stock Ticker</label>
+                    <input type="text" id="ticker" placeholder="e.g. TGT, AAPL, TSLA" style="width:160px;" value="">
+                </div>
+                <button class="btn btn-blue" onclick="lookupCompany()">Look Up</button>
             </div>
-            <div class="panel">
-                <h3>Prior Year <span class="year">(FY2021)</span> — Item 1A Risk Factors</h3>
-                <textarea id="prior-text" placeholder="Paste prior year's Item 1A risk factor text here..."></textarea>
-            </div>
+            <div class="status" id="lookup-status"></div>
         </div>
 
-        <div class="controls">
-            <label>Ticker:</label>
-            <input type="text" class="ticker-input" id="ticker" value="TGT" placeholder="TGT">
-            <button class="btn btn-primary" onclick="analyzeRisks()">Analyze Risk Changes</button>
-            <button class="btn btn-secondary" onclick="loadSample()">Load Sample Data</button>
-        </div>
-
-        <div class="loading" id="loading">
-            Analyzing risk factors...
+        <div class="input-section" id="year-section" style="display:none;">
+            <h3>Step 2: Select Years to Compare</h3>
+            <div id="company-info" style="margin-bottom:16px;color:#9ca3af;font-size:14px;"></div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Current Year (newer)</label>
+                    <select id="year-current"></select>
+                </div>
+                <div class="form-group">
+                    <label>Prior Year (older)</label>
+                    <select id="year-prior"></select>
+                </div>
+                <button class="btn btn-green" onclick="runAnalysis()">Analyze Risks</button>
+            </div>
+            <div class="status" id="analysis-status"></div>
         </div>
 
         <div class="results" id="results"></div>
     </div>
 
+    <div class="loading-overlay" id="loading">
+        <div class="spinner"></div>
+        <div class="loading-text" id="loading-text">Fetching filings from SEC EDGAR...</div>
+    </div>
+
     <div class="footer">
-        ERPSA v0.3 | Signals: Textual Change Magnitude + Sentiment Direction<br>
-        Academic basis: Cohen et al. "Lazy Prices" (2020) + Loughran & McDonald (2011)
+        ERPSA v1.0 | Data: SEC EDGAR (free, public) | Not investment advice
     </div>
 
     <script>
-        function loadSample() {
-            document.getElementById('current-text').value = SAMPLE_CURRENT;
-            document.getElementById('prior-text').value = SAMPLE_PRIOR;
-            document.getElementById('ticker').value = 'TGT';
-        }
+        let companyData = null;
 
-        async function analyzeRisks() {
-            const currentText = document.getElementById('current-text').value;
-            const priorText = document.getElementById('prior-text').value;
-            const ticker = document.getElementById('ticker').value || 'UNKNOWN';
+        async function lookupCompany() {
+            const ticker = document.getElementById('ticker').value.trim().toUpperCase();
+            if (!ticker) { setStatus('lookup-status', 'Please enter a ticker symbol.', 'error'); return; }
 
-            if (!currentText.trim() || !priorText.trim()) {
-                alert('Please paste risk factor text for both years (or click "Load Sample Data").');
-                return;
-            }
-
-            document.getElementById('loading').classList.add('show');
+            setStatus('lookup-status', 'Looking up ' + ticker + ' on SEC EDGAR...', '');
+            document.getElementById('year-section').style.display = 'none';
             document.getElementById('results').classList.remove('show');
 
             try {
-                const response = await fetch('/analyze', {
+                const resp = await fetch('/api/lookup?ticker=' + encodeURIComponent(ticker));
+                const data = await resp.json();
+                if (data.error) { setStatus('lookup-status', data.error, 'error'); return; }
+
+                companyData = data;
+                setStatus('lookup-status', 'Found: ' + data.company + ' (CIK: ' + data.cik + ')', 'success');
+
+                // Populate year dropdowns
+                const years = data.years;
+                const selCurrent = document.getElementById('year-current');
+                const selPrior = document.getElementById('year-prior');
+                selCurrent.innerHTML = '';
+                selPrior.innerHTML = '';
+
+                years.forEach((y, i) => {
+                    const opt1 = new Option(y.year + ' (' + y.date + ')', i);
+                    const opt2 = new Option(y.year + ' (' + y.date + ')', i);
+                    selCurrent.add(opt1);
+                    selPrior.add(opt2);
+                });
+
+                // Default: current = first, prior = second
+                if (years.length >= 2) {
+                    selCurrent.selectedIndex = 0;
+                    selPrior.selectedIndex = 1;
+                }
+
+                document.getElementById('company-info').innerHTML =
+                    '<strong>' + data.company + '</strong> (' + data.ticker + ') — ' + years.length + ' annual filings available';
+                document.getElementById('year-section').style.display = 'block';
+            } catch (err) {
+                setStatus('lookup-status', 'Network error: ' + err.message, 'error');
+            }
+        }
+
+        async function runAnalysis() {
+            if (!companyData) return;
+
+            const currentIdx = parseInt(document.getElementById('year-current').value);
+            const priorIdx = parseInt(document.getElementById('year-prior').value);
+
+            if (currentIdx === priorIdx) {
+                setStatus('analysis-status', 'Please select two different years.', 'error');
+                return;
+            }
+
+            showLoading('Fetching 10-K filings from SEC EDGAR... (this may take 10-30 seconds)');
+
+            try {
+                const resp = await fetch('/api/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        current_text: currentText,
-                        prior_text: priorText,
-                        ticker: ticker,
+                        ticker: companyData.ticker,
+                        cik: companyData.cik,
+                        current_filing: companyData.filings[currentIdx],
+                        prior_filing: companyData.filings[priorIdx],
                     }),
                 });
-                const data = await response.json();
+                const data = await resp.json();
+                hideLoading();
+
+                if (data.error) {
+                    setStatus('analysis-status', data.error, 'error');
+                    return;
+                }
+
+                setStatus('analysis-status', 'Analysis complete!', 'success');
                 displayResults(data);
             } catch (err) {
-                alert('Error: ' + err.message);
-            } finally {
-                document.getElementById('loading').classList.remove('show');
+                hideLoading();
+                setStatus('analysis-status', 'Error: ' + err.message, 'error');
             }
         }
 
@@ -348,164 +682,230 @@ HTML_PAGE = """<!DOCTYPE html>
             const container = document.getElementById('results');
             const risks = data.risks || [];
 
-            const highPriority = risks.filter(r => r.probability >= 50);
-            const actionable = risks.filter(r => r.probability >= 20 && r.probability < 50);
-            const low = risks.filter(r => r.probability < 20);
+            const high = risks.filter(r => r.probability >= 50);
+            const med = risks.filter(r => r.probability >= 20 && r.probability < 50);
+            const low = risks.filter(r => r.probability < 20 && r.status !== 'UNCHANGED');
+            const unchanged = risks.filter(r => r.status === 'UNCHANGED');
 
             let html = `
                 <div class="results-header">
-                    <h2>Risk Analysis: ${data.ticker} (FY${data.current_year} vs FY${data.prior_year})</h2>
-                    <div class="stats">
-                        <div class="stat"><div class="value">${risks.length}</div><div class="label">Risks Identified</div></div>
-                        <div class="stat"><div class="value">${highPriority.length}</div><div class="label">High Priority</div></div>
-                        <div class="stat"><div class="value">${actionable.length}</div><div class="label">Actionable</div></div>
-                        <div class="stat"><div class="value">${data.avg_score}</div><div class="label">Avg Score</div></div>
+                    <h3>${data.ticker} — Risk Analysis (FY${data.current_year} vs FY${data.prior_year})</h3>
+                    <div class="stats-row">
+                        <div class="stat-box"><div class="value">${risks.length}</div><div class="label">Risks Found</div></div>
+                        <div class="stat-box"><div class="value" style="color:#fca5a5">${high.length}</div><div class="label">High Priority</div></div>
+                        <div class="stat-box"><div class="value" style="color:#fdba74">${med.length}</div><div class="label">Moderate</div></div>
+                        <div class="stat-box"><div class="value" style="color:#86efac">${unchanged.length}</div><div class="label">Unchanged</div></div>
                     </div>
                 </div>
             `;
 
-            if (highPriority.length > 0) {
-                html += '<h3 style="color:#fc8181;margin-bottom:12px;font-size:14px;">HIGH PRIORITY</h3>';
-                highPriority.forEach(r => { html += renderRiskCard(r); });
-            }
-            if (actionable.length > 0) {
-                html += '<h3 style="color:#f6e05e;margin:20px 0 12px;font-size:14px;">ACTIONABLE</h3>';
-                actionable.forEach(r => { html += renderRiskCard(r); });
-            }
-            if (low.length > 0) {
-                html += '<h3 style="color:#68d391;margin:20px 0 12px;font-size:14px;">LOW RISK / UNCHANGED</h3>';
-                low.forEach(r => { html += renderRiskCard(r); });
+            const allSorted = risks.filter(r => r.status !== 'UNCHANGED').sort((a,b) => b.probability - a.probability);
+            allSorted.forEach(r => { html += renderRisk(r); });
+
+            if (unchanged.length > 0) {
+                html += '<div style="margin-top:20px;padding:16px;background:#111827;border-radius:12px;border:1px solid #1f2937;">';
+                html += '<h4 style="color:#22c55e;margin-bottom:8px;">Unchanged Risks (Boilerplate — No Signal)</h4>';
+                html += '<p style="color:#9ca3af;font-size:13px;margin-bottom:12px;">These risks use the exact same language as last year. No change = no danger signal.</p>';
+                unchanged.forEach(r => {
+                    html += '<div style="padding:6px 0;font-size:13px;color:#6b7280;">• ' + r.title + '</div>';
+                });
+                html += '</div>';
             }
 
             container.innerHTML = html;
             container.classList.add('show');
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
-        function renderRiskCard(risk) {
+        function renderRisk(risk) {
             const level = risk.probability >= 70 ? 'very-high' :
                           risk.probability >= 50 ? 'high' :
+                          risk.probability >= 35 ? 'medium-high' :
                           risk.probability >= 20 ? 'medium' : 'low';
-            const statusClass = risk.status.toLowerCase();
-
             return `
                 <div class="risk-card ${level}">
-                    <span class="probability ${level}">${risk.probability}%</span>
-                    <div class="title">${risk.title}</div>
-                    <div class="meta">
-                        <span class="status-badge ${statusClass}">${risk.status}</span>
-                        <span>Level: ${risk.level}</span>
+                    <div class="top-row">
+                        <div class="title">${risk.title}</div>
+                        <div class="score ${level}">${risk.probability}%</div>
+                    </div>
+                    <div class="badges">
+                        <span class="badge ${risk.status.toLowerCase()}">${risk.status}</span>
+                        <span class="badge level">${risk.level}</span>
                     </div>
                     <div class="bar"><div class="bar-fill ${level}" style="width:${risk.probability}%"></div></div>
-                    <div class="signal-detail">
-                        <div class="signal"><span class="signal-name">Signal 1 (Textual Change):</span> <span class="signal-value">${risk.textual_score}</span></div>
-                        <div class="signal"><span class="signal-name">Signal 2 (Sentiment):</span> <span class="signal-value">${risk.sentiment_score}</span></div>
+                    <div class="explanation">${risk.explanation}</div>
+                    <div class="signals">
+                        <div class="signal-item"><span class="name">Signal 1 (Text Changed):</span> <span class="val">${(risk.textual_score * 100).toFixed(0)}%</span></div>
+                        <div class="signal-item"><span class="name">Signal 2 (Negative Tone):</span> <span class="val">${(risk.sentiment_score * 100).toFixed(0)}%</span></div>
                     </div>
                 </div>
             `;
         }
 
-        const SAMPLE_CURRENT = `""" + SAMPLE_CURRENT.replace('`', '\\`').replace('\\n', '\\n') + """`;
-        const SAMPLE_PRIOR = `""" + SAMPLE_PRIOR.replace('`', '\\`').replace('\\n', '\\n') + """`;
+        function setStatus(id, msg, cls) {
+            const el = document.getElementById(id);
+            el.textContent = msg;
+            el.className = 'status ' + (cls || '');
+        }
+        function showLoading(msg) { document.getElementById('loading-text').textContent = msg; document.getElementById('loading').classList.add('show'); }
+        function hideLoading() { document.getElementById('loading').classList.remove('show'); }
+
+        // Allow Enter key on ticker input
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('ticker').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') lookupCompany();
+            });
+        });
     </script>
 </body>
 </html>"""
 
 
+
 # =========================================================
-# HTTP Request Handler
+# HTTP Handler
 # =========================================================
 
 class ERPSAHandler(BaseHTTPRequestHandler):
-    """Simple HTTP handler for the ERPSA web interface."""
+    """HTTP request handler for ERPSA web app."""
 
     def do_GET(self):
-        """Serve the main page."""
-        if self.path == '/' or self.path == '':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(HTML_PAGE.encode('utf-8'))
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == '/' or path == '':
+            self._serve_html(HOME_PAGE)
+        elif path == '/analyze':
+            self._serve_html(ANALYZE_PAGE)
+        elif path == '/api/lookup':
+            self._handle_lookup(parsed)
         else:
             self.send_response(404)
             self.end_headers()
+            self.wfile.write(b'Not Found')
 
     def do_POST(self):
-        """Handle analysis requests."""
-        if self.path == '/analyze':
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-
-            try:
-                data = json.loads(body)
-                result = self._run_analysis(data)
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps(result).encode('utf-8'))
-            except Exception as e:
-                self.send_response(500)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({'error': str(e)}).encode('utf-8'))
+        parsed = urlparse(self.path)
+        if parsed.path == '/api/analyze':
+            self._handle_analyze()
         else:
             self.send_response(404)
             self.end_headers()
 
-    def _run_analysis(self, data):
-        """Run the full analysis pipeline."""
-        current_text = data.get('current_text', '')
-        prior_text = data.get('prior_text', '')
-        ticker = data.get('ticker', 'UNKNOWN')
+    def _serve_html(self, html):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(html.encode('utf-8'))
 
-        # Clean text
-        clean_current = clean_text_preserve_structure(current_text)
-        clean_prior = clean_text_preserve_structure(prior_text)
+    def _serve_json(self, data):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode('utf-8'))
 
-        # Parse into sections
-        sections_current = parse_risk_sections(clean_current)
-        sections_prior = parse_risk_sections(clean_prior)
+    def _handle_lookup(self, parsed):
+        """Handle ticker lookup — returns available years."""
+        params = parse_qs(parsed.query)
+        ticker = params.get('ticker', [''])[0].strip()
+        if not ticker:
+            self._serve_json({'error': 'No ticker provided'})
+            return
 
-        # Match and classify
-        matches = match_risk_categories(sections_current, sections_prior)
-        change_report = classify_risk_changes(
-            matches=matches,
-            ticker=ticker,
-            current_year=2022,
-            prior_year=2021,
-            total_current=len(sections_current),
-            total_prior=len(sections_prior),
-        )
+        print(f"  [LOOKUP] Looking up ticker: {ticker}")
+        result = get_available_years(ticker)
+        self._serve_json(result)
 
-        # Score
-        scoring = run_scoring(change_report, verbose=False)
+    def _handle_analyze(self):
+        """Handle full analysis request."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8')
 
-        # Format response
-        risks = []
-        for r in scoring.risk_scores:
-            risks.append({
-                'title': r.title[:80],
-                'status': r.status.value,
-                'probability': round(r.preliminary_probability, 1),
-                'level': r.risk_level_label,
-                'textual_score': round(r.textual_change_score, 3),
-                'sentiment_score': round(r.sentiment_score, 3),
-            })
+        try:
+            data = json.loads(body)
+            ticker = data.get('ticker', 'UNKNOWN')
+            current_filing = data.get('current_filing', {})
+            prior_filing = data.get('prior_filing', {})
 
-        # Sort by probability descending
-        risks.sort(key=lambda x: x['probability'], reverse=True)
+            print(f"  [ANALYZE] Running analysis for {ticker}")
+            print(f"    Current: {current_filing.get('date', '?')}")
+            print(f"    Prior: {prior_filing.get('date', '?')}")
 
-        return {
-            'ticker': ticker,
-            'current_year': 2022,
-            'prior_year': 2021,
-            'risks': risks,
-            'avg_score': round(scoring.risk_scores[0].preliminary_probability if risks else 0, 1) if risks else 0,
-            'total_current': len(sections_current),
-            'total_prior': len(sections_prior),
-        }
+            # Fetch filings
+            print(f"  [ANALYZE] Fetching current year filing...")
+            current_text = fetch_filing_text(current_filing)
+            time.sleep(0.5)  # SEC rate limiting courtesy
+
+            print(f"  [ANALYZE] Fetching prior year filing...")
+            prior_text = fetch_filing_text(prior_filing)
+
+            if current_text.startswith('[') or prior_text.startswith('['):
+                self._serve_json({
+                    'error': f'Could not extract risk factors. '
+                             f'Current: {"OK" if not current_text.startswith("[") else current_text[:100]}. '
+                             f'Prior: {"OK" if not prior_text.startswith("[") else prior_text[:100]}.'
+                })
+                return
+
+            # Run pipeline
+            print(f"  [ANALYZE] Running scoring pipeline...")
+            clean_current = clean_text_preserve_structure(current_text)
+            clean_prior = clean_text_preserve_structure(prior_text)
+
+            sections_current = parse_risk_sections(clean_current)
+            sections_prior = parse_risk_sections(clean_prior)
+
+            print(f"    Parsed: {len(sections_current)} current sections, {len(sections_prior)} prior sections")
+
+            matches = match_risk_categories(sections_current, sections_prior)
+            change_report = classify_risk_changes(
+                matches=matches,
+                ticker=ticker,
+                current_year=current_filing.get('year', 0),
+                prior_year=prior_filing.get('year', 0),
+                total_current=len(sections_current),
+                total_prior=len(sections_prior),
+            )
+
+            scoring = run_scoring(change_report, verbose=False)
+
+            # Build response with explanations
+            risks = []
+            for i, r in enumerate(scoring.risk_scores):
+                classification = change_report.classifications[i] if i < len(change_report.classifications) else None
+                explanation = generate_risk_explanation(r, classification) if classification else ""
+
+                risks.append({
+                    'title': r.title[:120],
+                    'status': r.status.value,
+                    'probability': round(r.preliminary_probability, 1),
+                    'level': r.risk_level_label,
+                    'textual_score': round(r.textual_change_score, 3),
+                    'sentiment_score': round(r.sentiment_score, 3),
+                    'explanation': explanation,
+                })
+
+            risks.sort(key=lambda x: x['probability'], reverse=True)
+
+            result = {
+                'ticker': ticker,
+                'current_year': current_filing.get('year', 0),
+                'prior_year': prior_filing.get('year', 0),
+                'risks': risks,
+                'total_current': len(sections_current),
+                'total_prior': len(sections_prior),
+            }
+
+            print(f"  [ANALYZE] Complete. {len(risks)} risks scored.")
+            self._serve_json(result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._serve_json({'error': f'Analysis error: {str(e)}'})
 
     def log_message(self, format, *args):
-        """Suppress default logging for cleaner output."""
+        """Custom log format."""
         pass
 
 
@@ -516,24 +916,28 @@ class ERPSAHandler(BaseHTTPRequestHandler):
 def main():
     port = 8888
     server = HTTPServer(('0.0.0.0', port), ERPSAHandler)
+
     import webbrowser
     print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║  ERPSA — Equity Risk Predictor & Sentiment Analyzer        ║
-║  Web Interface v0.3                                        ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                            ║
-║  Server running at: http://localhost:{port}                 ║
-║                                                            ║
-║  Signals Active:                                           ║
-║    [1] Textual Change Magnitude (Cohen et al. 2020)        ║
-║    [2] Sentiment Direction (Loughran & McDonald 2011)      ║
-║                                                            ║
-║  Press Ctrl+C to stop                                      ║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║  ERPSA — Equity Risk Predictor & Sentiment Analyzer            ║
+║  Version 1.0                                                   ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                ║
+║  Server running at: http://localhost:{port}                      ║
+║                                                                ║
+║  How to use:                                                   ║
+║    1. Enter a stock ticker (AAPL, TGT, TSLA, etc.)             ║
+║    2. Click "Look Up" to fetch available filing years           ║
+║    3. Select two years and click "Analyze Risks"               ║
+║    4. Review scored risks with plain-English explanations       ║
+║                                                                ║
+║  Data source: SEC EDGAR (free, public, no API key needed)      ║
+║  Press Ctrl+C to stop                                          ║
+╚══════════════════════════════════════════════════════════════════╝
 """)
-    # Auto-open browser
     webbrowser.open(f'http://localhost:{port}')
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
