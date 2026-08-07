@@ -341,6 +341,286 @@ def get_available_years(ticker: str) -> Dict:
     }
 
 
+# =========================================================
+# Financial Data & Stock Analysis
+# =========================================================
+
+def fetch_company_financials(cik: str, ticker: str) -> Dict:
+    """
+    Fetch key financial data from SEC EDGAR's XBRL companyfacts API.
+    Returns revenue, net income, total assets, liabilities, cash, and more.
+    """
+    url = f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json'
+    req = urllib.request.Request(url, headers=SEC_HEADERS)
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=20)
+        data = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"  [FINANCIALS] Error fetching XBRL data: {e}")
+        return {}
+
+    facts = data.get('facts', {})
+    us_gaap = facts.get('us-gaap', {})
+
+    def get_annual_values(concept: str, max_entries: int = 5) -> List[Dict]:
+        """Extract annual (10-K) values for a concept."""
+        concept_data = us_gaap.get(concept, {})
+        units = concept_data.get('units', {})
+        # Try USD first, then shares
+        entries = units.get('USD', units.get('shares', []))
+        # Filter to annual (10-K) filings only
+        annual = [e for e in entries if e.get('form') == '10-K']
+        # Sort by end date descending
+        annual.sort(key=lambda x: x.get('end', ''), reverse=True)
+        # Deduplicate by fiscal year
+        seen_years = set()
+        unique = []
+        for entry in annual:
+            end_date = entry.get('end', '')
+            year = end_date[:4] if end_date else ''
+            if year and year not in seen_years:
+                seen_years.add(year)
+                unique.append({
+                    'value': entry.get('val', 0),
+                    'end': end_date,
+                    'year': int(year) if year else 0,
+                    'filed': entry.get('filed', ''),
+                })
+            if len(unique) >= max_entries:
+                break
+        return unique
+
+    # Pull key financial metrics
+    financials = {
+        'revenue': get_annual_values('Revenues') or get_annual_values('RevenueFromContractWithCustomerExcludingAssessedTax') or get_annual_values('SalesRevenueNet'),
+        'net_income': get_annual_values('NetIncomeLoss'),
+        'total_assets': get_annual_values('Assets'),
+        'total_liabilities': get_annual_values('Liabilities'),
+        'stockholders_equity': get_annual_values('StockholdersEquity'),
+        'cash': get_annual_values('CashAndCashEquivalentsAtCarryingValue'),
+        'operating_income': get_annual_values('OperatingIncomeLoss'),
+        'total_debt': get_annual_values('LongTermDebt') or get_annual_values('LongTermDebtNoncurrent'),
+        'shares_outstanding': get_annual_values('CommonStockSharesOutstanding'),
+        'eps': get_annual_values('EarningsPerShareDiluted'),
+    }
+
+    return financials
+
+
+def generate_stock_analysis(financials: Dict, ticker: str, company: str, current_year: int) -> Dict:
+    """
+    Generate a comprehensive stock analysis from financial data.
+    Returns structured data for frontend rendering.
+    """
+    analysis = {
+        'company': company,
+        'ticker': ticker,
+        'metrics': [],
+        'health_score': 0,
+        'health_label': '',
+        'summary': '',
+        'strengths': [],
+        'concerns': [],
+        'trend_analysis': [],
+    }
+
+    if not financials or not any(financials.values()):
+        analysis['summary'] = 'Financial data not available from SEC EDGAR for this company.'
+        return analysis
+
+    def latest(key):
+        vals = financials.get(key, [])
+        return vals[0]['value'] if vals else None
+
+    def prior(key):
+        vals = financials.get(key, [])
+        return vals[1]['value'] if len(vals) > 1 else None
+
+    def fmt_billions(val):
+        if val is None: return 'N/A'
+        if abs(val) >= 1e9: return f"${val/1e9:.1f}B"
+        if abs(val) >= 1e6: return f"${val/1e6:.0f}M"
+        return f"${val:,.0f}"
+
+    def fmt_pct(val):
+        if val is None: return 'N/A'
+        return f"{val*100:.1f}%"
+
+    def yoy_change(key):
+        curr = latest(key)
+        prev = prior(key)
+        if curr and prev and prev != 0:
+            return (curr - prev) / abs(prev)
+        return None
+
+    # ─── Compute Key Metrics ───
+    rev = latest('revenue')
+    rev_prior = prior('revenue')
+    ni = latest('net_income')
+    ni_prior = prior('net_income')
+    assets = latest('total_assets')
+    liabilities = latest('total_liabilities')
+    equity = latest('stockholders_equity')
+    cash = latest('cash')
+    debt = latest('total_debt')
+    op_income = latest('operating_income')
+
+    health_points = 0
+    max_points = 0
+
+    # Revenue
+    if rev:
+        rev_growth = yoy_change('revenue')
+        analysis['metrics'].append({
+            'name': 'Revenue',
+            'value': fmt_billions(rev),
+            'change': f"{rev_growth*100:+.1f}%" if rev_growth is not None else None,
+            'trend': 'up' if rev_growth and rev_growth > 0 else 'down' if rev_growth and rev_growth < 0 else 'flat',
+        })
+        if rev_growth is not None:
+            max_points += 20
+            if rev_growth > 0.05: health_points += 20
+            elif rev_growth > 0: health_points += 12
+            elif rev_growth > -0.05: health_points += 6
+            if rev_growth > 0.1:
+                analysis['strengths'].append(f"Strong revenue growth of {rev_growth*100:.1f}% year-over-year")
+            elif rev_growth < -0.05:
+                analysis['concerns'].append(f"Revenue declined {rev_growth*100:.1f}% — a warning sign for future performance")
+
+    # Net Income / Profitability
+    if ni is not None and rev:
+        profit_margin = ni / rev if rev != 0 else 0
+        ni_growth = yoy_change('net_income')
+        analysis['metrics'].append({
+            'name': 'Net Income',
+            'value': fmt_billions(ni),
+            'change': f"{ni_growth*100:+.1f}%" if ni_growth is not None else None,
+            'trend': 'up' if ni_growth and ni_growth > 0 else 'down' if ni_growth and ni_growth < 0 else 'flat',
+        })
+        analysis['metrics'].append({
+            'name': 'Profit Margin',
+            'value': fmt_pct(profit_margin),
+            'change': None,
+            'trend': 'up' if profit_margin > 0.15 else 'flat' if profit_margin > 0.05 else 'down',
+        })
+        max_points += 20
+        if profit_margin > 0.15: health_points += 20
+        elif profit_margin > 0.08: health_points += 14
+        elif profit_margin > 0: health_points += 8
+        if profit_margin > 0.2:
+            analysis['strengths'].append(f"Excellent profit margin of {profit_margin*100:.1f}% — highly profitable business")
+        elif ni < 0:
+            analysis['concerns'].append(f"Company is unprofitable (net loss of {fmt_billions(ni)})")
+
+    # Balance Sheet Health
+    if assets and liabilities:
+        debt_ratio = liabilities / assets
+        analysis['metrics'].append({
+            'name': 'Debt-to-Assets Ratio',
+            'value': f"{debt_ratio:.2f}",
+            'change': None,
+            'trend': 'up' if debt_ratio > 0.7 else 'flat' if debt_ratio > 0.5 else 'down',
+        })
+        max_points += 20
+        if debt_ratio < 0.5: health_points += 20
+        elif debt_ratio < 0.65: health_points += 14
+        elif debt_ratio < 0.8: health_points += 8
+        if debt_ratio > 0.8:
+            analysis['concerns'].append(f"High leverage — liabilities are {debt_ratio*100:.0f}% of total assets, indicating financial stress")
+        elif debt_ratio < 0.4:
+            analysis['strengths'].append(f"Conservative balance sheet with low leverage ({debt_ratio*100:.0f}% debt-to-assets)")
+
+    # Cash Position
+    if cash and assets:
+        cash_ratio = cash / assets
+        analysis['metrics'].append({
+            'name': 'Cash & Equivalents',
+            'value': fmt_billions(cash),
+            'change': None,
+            'trend': 'up' if cash_ratio > 0.15 else 'flat',
+        })
+        max_points += 20
+        if cash_ratio > 0.2: health_points += 20
+        elif cash_ratio > 0.1: health_points += 14
+        elif cash_ratio > 0.05: health_points += 8
+        if cash_ratio > 0.25:
+            analysis['strengths'].append(f"Strong cash position ({cash_ratio*100:.0f}% of assets) — well-prepared for downturns")
+        elif cash_ratio < 0.03:
+            analysis['concerns'].append(f"Very low cash reserves ({cash_ratio*100:.1f}% of assets) — vulnerable to liquidity crunches")
+
+    # Equity
+    if equity:
+        analysis['metrics'].append({
+            'name': 'Stockholders Equity',
+            'value': fmt_billions(equity),
+            'change': None,
+            'trend': 'up' if equity > 0 else 'down',
+        })
+        max_points += 20
+        if equity > 0: health_points += 15
+        if equity and assets and equity / assets > 0.4: health_points += 5
+        if equity < 0:
+            analysis['concerns'].append("Negative stockholders' equity — the company owes more than it owns (common for tech companies with heavy buybacks)")
+
+    # Total Assets
+    if assets:
+        analysis['metrics'].append({
+            'name': 'Total Assets',
+            'value': fmt_billions(assets),
+            'change': None,
+            'trend': 'flat',
+        })
+
+    # ─── Trend Analysis (YoY comparisons) ───
+    trends = []
+    for key, label in [('revenue', 'Revenue'), ('net_income', 'Net Income'), ('total_assets', 'Total Assets')]:
+        vals = financials.get(key, [])
+        if len(vals) >= 3:
+            recent_vals = [v['value'] for v in vals[:4]]
+            years = [v['year'] for v in vals[:4]]
+            # Check if trending up or down
+            if all(recent_vals[i] >= recent_vals[i+1] for i in range(len(recent_vals)-1)):
+                trends.append(f"{label} has grown consistently over the last {len(recent_vals)} years")
+            elif all(recent_vals[i] <= recent_vals[i+1] for i in range(len(recent_vals)-1)):
+                trends.append(f"{label} has declined consistently over the last {len(recent_vals)} years — concerning pattern")
+    analysis['trend_analysis'] = trends
+
+    # ─── Overall Health Score ───
+    if max_points > 0:
+        health_pct = (health_points / max_points) * 100
+        analysis['health_score'] = round(health_pct)
+        if health_pct >= 75: analysis['health_label'] = 'STRONG'
+        elif health_pct >= 55: analysis['health_label'] = 'HEALTHY'
+        elif health_pct >= 35: analysis['health_label'] = 'MODERATE'
+        else: analysis['health_label'] = 'WEAK'
+    else:
+        analysis['health_score'] = 0
+        analysis['health_label'] = 'UNKNOWN'
+
+    # ─── Summary ───
+    summary_parts = []
+    summary_parts.append(f"{company} ({ticker})")
+    if rev:
+        summary_parts.append(f"generated {fmt_billions(rev)} in revenue")
+    if ni is not None:
+        if ni > 0:
+            summary_parts.append(f"with {fmt_billions(ni)} in net income")
+        else:
+            summary_parts.append(f"but posted a net loss of {fmt_billions(abs(ni))}")
+
+    rev_growth = yoy_change('revenue')
+    if rev_growth is not None:
+        if rev_growth > 0:
+            summary_parts.append(f"(up {rev_growth*100:.1f}% year-over-year)")
+        else:
+            summary_parts.append(f"(down {abs(rev_growth)*100:.1f}% year-over-year)")
+
+    analysis['summary'] = ' '.join(summary_parts) + '.'
+
+    return analysis
+
+
 
 # =========================================================
 # Risk Explanation Generator
@@ -777,6 +1057,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         ticker: companyData.ticker,
+                        company: companyData.company,
                         cik: companyData.cik,
                         current_filing: companyData.filings[currentIdx],
                         prior_filing: companyData.filings[priorIdx],
@@ -822,6 +1103,11 @@ ANALYZE_PAGE = """<!DOCTYPE html>
             const allSorted = risks.filter(r => r.status !== 'UNCHANGED').sort((a,b) => b.probability - a.probability);
             allSorted.forEach(r => { html += renderRisk(r); });
 
+            // Stock Analysis Section
+            if (data.stock_analysis) {
+                html += renderStockAnalysis(data.stock_analysis);
+            }
+
             if (unchanged.length > 0) {
                 html += '<div style="margin-top:20px;padding:16px;background:#111827;border-radius:12px;border:1px solid #1f2937;">';
                 html += '<h4 style="color:#22c55e;margin-bottom:8px;">Unchanged Risks (Boilerplate — No Signal)</h4>';
@@ -835,6 +1121,80 @@ ANALYZE_PAGE = """<!DOCTYPE html>
             container.innerHTML = html;
             container.classList.add('show');
             container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function renderStockAnalysis(sa) {
+            if (!sa || !sa.metrics || sa.metrics.length === 0) return '';
+
+            const healthColor = sa.health_score >= 75 ? '#34d399' :
+                                sa.health_score >= 55 ? '#60a5fa' :
+                                sa.health_score >= 35 ? '#fbbf24' : '#f87171';
+
+            let html = `
+                <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:28px;margin-top:30px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                        <h3 style="color:#60a5fa;font-size:20px;">Stock Analysis: ${sa.ticker}</h3>
+                        <div style="text-align:right;">
+                            <div style="font-size:36px;font-weight:700;color:${healthColor};">${sa.health_score}/100</div>
+                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;">${sa.health_label} Financial Health</div>
+                        </div>
+                    </div>
+                    <p style="color:#d1d5db;font-size:14px;line-height:1.6;margin-bottom:20px;">${sa.summary}</p>
+
+                    <h4 style="color:#e2e8f0;margin-bottom:12px;font-size:15px;">Key Financial Metrics</h4>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:24px;">
+            `;
+
+            sa.metrics.forEach(m => {
+                const trendIcon = m.trend === 'up' ? '<span style="color:#34d399">&#9650;</span>' :
+                                  m.trend === 'down' ? '<span style="color:#f87171">&#9660;</span>' :
+                                  '<span style="color:#9ca3af">&#9654;</span>';
+                const changeHtml = m.change ? `<span style="color:${m.change.startsWith('+') ? '#34d399' : '#f87171'};font-size:12px;"> ${m.change}</span>` : '';
+                html += `
+                    <div style="background:#0a0e17;border-radius:8px;padding:14px;">
+                        <div style="font-size:11px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">${m.name}</div>
+                        <div style="font-size:18px;font-weight:600;">${trendIcon} ${m.value}${changeHtml}</div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+
+            // Strengths
+            if (sa.strengths && sa.strengths.length > 0) {
+                html += '<h4 style="color:#34d399;margin-bottom:8px;font-size:14px;">Strengths</h4><ul style="margin-bottom:16px;padding-left:20px;">';
+                sa.strengths.forEach(s => { html += `<li style="color:#d1d5db;font-size:13px;margin-bottom:4px;">${s}</li>`; });
+                html += '</ul>';
+            }
+
+            // Concerns
+            if (sa.concerns && sa.concerns.length > 0) {
+                html += '<h4 style="color:#f87171;margin-bottom:8px;font-size:14px;">Concerns</h4><ul style="margin-bottom:16px;padding-left:20px;">';
+                sa.concerns.forEach(c => { html += `<li style="color:#d1d5db;font-size:13px;margin-bottom:4px;">${c}</li>`; });
+                html += '</ul>';
+            }
+
+            // Trends
+            if (sa.trend_analysis && sa.trend_analysis.length > 0) {
+                html += '<h4 style="color:#fbbf24;margin-bottom:8px;font-size:14px;">Multi-Year Trends</h4><ul style="margin-bottom:16px;padding-left:20px;">';
+                sa.trend_analysis.forEach(t => { html += `<li style="color:#d1d5db;font-size:13px;margin-bottom:4px;">${t}</li>`; });
+                html += '</ul>';
+            }
+
+            // Context note
+            html += `
+                <div style="margin-top:16px;padding:12px;background:#0a0e17;border-radius:8px;border-left:3px solid #374151;">
+                    <p style="color:#9ca3af;font-size:12px;line-height:1.6;">
+                        <strong style="color:#e2e8f0;">How to read this together with the Risk Analysis above:</strong>
+                        If the risk scores above are HIGH and the financial health here is DECLINING — that's the most dangerous combination.
+                        It means the company is both warning you about new threats AND their numbers are already weakening.
+                        If risk scores are high but financials are strong, the company may be proactively disclosing risks before they impact results (less immediately dangerous).
+                    </p>
+                </div>
+            `;
+
+            html += '</div>';
+            return html;
         }
 
         function renderRisk(risk) {
@@ -1007,6 +1367,16 @@ class ERPSAHandler(BaseHTTPRequestHandler):
 
             risks.sort(key=lambda x: x['probability'], reverse=True)
 
+            # ─── Stock Analysis ───
+            print(f"  [ANALYZE] Fetching financial data for stock analysis...")
+            cik = data.get('cik', '')
+            financials = fetch_company_financials(cik, ticker) if cik else {}
+            stock_analysis = generate_stock_analysis(
+                financials, ticker,
+                data.get('company', ticker),
+                current_filing.get('year', 0)
+            )
+
             result = {
                 'ticker': ticker,
                 'current_year': current_filing.get('year', 0),
@@ -1014,6 +1384,7 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 'risks': risks,
                 'total_current': len(sections_current),
                 'total_prior': len(sections_prior),
+                'stock_analysis': stock_analysis,
             }
 
             print(f"  [ANALYZE] Complete. {len(risks)} risks scored.")
