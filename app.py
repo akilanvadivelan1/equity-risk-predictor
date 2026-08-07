@@ -621,6 +621,156 @@ def generate_stock_analysis(financials: Dict, ticker: str, company: str, current
     return analysis
 
 
+def compute_recommendation(stock_analysis: Dict, risks: List[Dict]) -> Dict:
+    """
+    Compute a buy/sell recommendation by combining:
+    - Financial health score (0-100)
+    - Average risk probability from textual analysis
+    - Number of high-priority risks
+    - Revenue/earnings trends
+
+    Returns a recommendation dict with signal, score, and explanation.
+    
+    Scale:
+        STRONG BUY  — financials strong + risks low/stable
+        BUY         — financials healthy + risks moderate
+        HOLD        — mixed signals or insufficient data
+        SELL        — financials weakening + risks elevated
+        STRONG SELL — financials deteriorating + risks very high
+    """
+    health_score = stock_analysis.get('health_score', 50)
+    health_label = stock_analysis.get('health_label', 'UNKNOWN')
+    strengths = stock_analysis.get('strengths', [])
+    concerns = stock_analysis.get('concerns', [])
+
+    # Calculate risk metrics
+    active_risks = [r for r in risks if r.get('status') not in ('UNCHANGED', None)]
+    high_risks = [r for r in active_risks if r.get('probability', 0) >= 50]
+    moderate_risks = [r for r in active_risks if 20 <= r.get('probability', 0) < 50]
+
+    avg_risk = 0
+    if active_risks:
+        avg_risk = sum(r.get('probability', 0) for r in active_risks) / len(active_risks)
+
+    max_risk = max((r.get('probability', 0) for r in risks), default=0)
+    new_risks = [r for r in risks if r.get('status') == 'NEW']
+
+    # ─── Scoring Matrix ───
+    # Financial component (0-50 points, higher = better)
+    financial_points = health_score / 2  # Maps 0-100 to 0-50
+
+    # Risk component (0-50 points, higher = WORSE risk = lower recommendation)
+    # Invert: low risk = high points for recommendation
+    risk_penalty = 0
+    risk_penalty += min(avg_risk * 0.4, 25)          # avg risk contributes up to 25
+    risk_penalty += len(high_risks) * 5               # each high risk costs 5
+    risk_penalty += len(new_risks) * 3                # new risks cost 3 each
+    risk_penalty = min(risk_penalty, 50)
+
+    risk_points = 50 - risk_penalty  # Invert: less risk = more points
+
+    # Combined score (0-100, higher = more bullish)
+    combined = financial_points + risk_points
+
+    # Growth bonus/penalty
+    metrics = stock_analysis.get('metrics', [])
+    for m in metrics:
+        if m.get('name') == 'Revenue' and m.get('change'):
+            try:
+                rev_change = float(m['change'].replace('%', '').replace('+', ''))
+                if rev_change > 10: combined += 5
+                elif rev_change > 5: combined += 3
+                elif rev_change < -5: combined -= 5
+                elif rev_change < -10: combined -= 8
+            except:
+                pass
+        if m.get('name') == 'Net Income' and m.get('change'):
+            try:
+                ni_change = float(m['change'].replace('%', '').replace('+', ''))
+                if ni_change < -15: combined -= 5
+                elif ni_change > 15: combined += 3
+            except:
+                pass
+
+    # Clamp
+    combined = max(0, min(100, combined))
+
+    # ─── Map to Recommendation ───
+    if combined >= 75:
+        signal = 'STRONG BUY'
+        color = '#22c55e'
+        emoji = '&#9650;&#9650;'
+    elif combined >= 60:
+        signal = 'BUY'
+        color = '#4ade80'
+        emoji = '&#9650;'
+    elif combined >= 40:
+        signal = 'HOLD'
+        color = '#fbbf24'
+        emoji = '&#9654;'
+    elif combined >= 25:
+        signal = 'SELL'
+        color = '#fb923c'
+        emoji = '&#9660;'
+    else:
+        signal = 'STRONG SELL'
+        color = '#ef4444'
+        emoji = '&#9660;&#9660;'
+
+    # ─── Generate Explanation ───
+    explanation_parts = []
+
+    # Financial health component
+    if health_score >= 70:
+        explanation_parts.append(f"Financials are strong (health score: {health_score}/100).")
+    elif health_score >= 50:
+        explanation_parts.append(f"Financials are generally healthy (health score: {health_score}/100).")
+    elif health_score >= 30:
+        explanation_parts.append(f"Financial health is moderate with some concerns (score: {health_score}/100).")
+    else:
+        explanation_parts.append(f"Financial health is weak (score: {health_score}/100) — significant warning signs.")
+
+    # Risk component
+    if len(high_risks) == 0 and avg_risk < 15:
+        explanation_parts.append("Risk analysis shows minimal changes in filing language — stable outlook.")
+    elif len(high_risks) == 0 and avg_risk < 30:
+        explanation_parts.append("Some risk language has shifted but no high-priority signals detected.")
+    elif len(high_risks) <= 2:
+        explanation_parts.append(f"{len(high_risks)} high-priority risk(s) detected in the filing — the company is warning about significant new threats.")
+    else:
+        explanation_parts.append(f"{len(high_risks)} high-priority risks detected — multiple areas of significant concern in the company's own disclosures.")
+
+    if new_risks:
+        explanation_parts.append(f"{len(new_risks)} brand-new risk disclosure(s) appeared that didn't exist last year.")
+
+    # Combined verdict
+    if signal == 'STRONG BUY':
+        explanation_parts.append("The combination of strong financials and stable/low-risk language is the best possible signal. Historically, these companies outperform.")
+    elif signal == 'BUY':
+        explanation_parts.append("Overall positive picture. Some changes in risk language to monitor, but financials support continued strength.")
+    elif signal == 'HOLD':
+        explanation_parts.append("Mixed signals — either financials are softening, risk language is shifting, or both. Monitor closely over the next quarter.")
+    elif signal == 'SELL':
+        explanation_parts.append("Concerning combination: elevated risk language with weakening fundamentals. The 'Lazy Prices' research shows this pattern precedes negative events.")
+    else:
+        explanation_parts.append("Severe warning: major new risk disclosures combined with deteriorating financial metrics. This is the highest-danger combination identified by academic research.")
+
+    return {
+        'signal': signal,
+        'score': round(combined),
+        'color': color,
+        'emoji': emoji,
+        'explanation': ' '.join(explanation_parts),
+        'components': {
+            'financial_points': round(financial_points, 1),
+            'risk_points': round(risk_points, 1),
+            'high_risk_count': len(high_risks),
+            'new_risk_count': len(new_risks),
+            'avg_risk_probability': round(avg_risk, 1),
+        }
+    }
+
+
 
 # =========================================================
 # Risk Explanation Generator
@@ -1100,6 +1250,11 @@ ANALYZE_PAGE = """<!DOCTYPE html>
                 </div>
             `;
 
+            // Recommendation Signal
+            if (data.recommendation) {
+                html += renderRecommendation(data.recommendation);
+            }
+
             const allSorted = risks.filter(r => r.status !== 'UNCHANGED').sort((a,b) => b.probability - a.probability);
             allSorted.forEach(r => { html += renderRisk(r); });
 
@@ -1121,6 +1276,52 @@ ANALYZE_PAGE = """<!DOCTYPE html>
             container.innerHTML = html;
             container.classList.add('show');
             container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function renderRecommendation(rec) {
+            if (!rec || !rec.signal) return '';
+
+            const bgColor = rec.signal === 'STRONG BUY' ? '#052e16' :
+                            rec.signal === 'BUY' ? '#052e16' :
+                            rec.signal === 'HOLD' ? '#422006' :
+                            rec.signal === 'SELL' ? '#431407' : '#450a0a';
+            const borderColor = rec.color;
+
+            return `
+                <div style="background:${bgColor};border:2px solid ${borderColor};border-radius:12px;padding:28px;margin-bottom:24px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+                        <div>
+                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Signal</div>
+                            <div style="font-size:36px;font-weight:800;color:${rec.color};letter-spacing:-1px;">${rec.emoji} ${rec.signal}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Conviction Score</div>
+                            <div style="font-size:42px;font-weight:700;color:${rec.color};">${rec.score}</div>
+                            <div style="font-size:11px;color:#6b7280;">out of 100</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:16px;padding:14px;background:rgba(0,0,0,0.3);border-radius:8px;">
+                        <p style="color:#d1d5db;font-size:14px;line-height:1.7;">${rec.explanation}</p>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px;">
+                        <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;text-align:center;">
+                            <div style="font-size:11px;color:#9ca3af;">Financial Health</div>
+                            <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.financial_points.toFixed(0)}/50</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;text-align:center;">
+                            <div style="font-size:11px;color:#9ca3af;">Risk Safety</div>
+                            <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.risk_points.toFixed(0)}/50</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;text-align:center;">
+                            <div style="font-size:11px;color:#9ca3af;">Avg Risk Level</div>
+                            <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.avg_risk_probability.toFixed(0)}%</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:12px;font-size:11px;color:#6b7280;text-align:center;">
+                        This is a research signal based on textual analysis + financial data. Not investment advice. Always do your own due diligence.
+                    </div>
+                </div>
+            `;
         }
 
         function renderStockAnalysis(sa) {
@@ -1377,6 +1578,9 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 current_filing.get('year', 0)
             )
 
+            # ─── Recommendation ───
+            recommendation = compute_recommendation(stock_analysis, risks)
+
             result = {
                 'ticker': ticker,
                 'current_year': current_filing.get('year', 0),
@@ -1385,6 +1589,7 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 'total_current': len(sections_current),
                 'total_prior': len(sections_prior),
                 'stock_analysis': stock_analysis,
+                'recommendation': recommendation,
             }
 
             print(f"  [ANALYZE] Complete. {len(risks)} risks scored.")
