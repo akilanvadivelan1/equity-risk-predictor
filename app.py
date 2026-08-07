@@ -408,6 +408,83 @@ def fetch_company_financials(cik: str, ticker: str) -> Dict:
     return financials
 
 
+def fetch_zacks_rank(ticker: str) -> Dict:
+    """
+    Fetch the current Zacks Rank for a ticker from zacks.com.
+    
+    Zacks Rank is based on 4 factors:
+    1. Agreement — % of analysts revising estimates in same direction
+    2. Magnitude — size of recent consensus estimate changes
+    3. Upside — difference between most accurate estimate and consensus
+    4. Surprise — recent earnings surprise history
+    
+    Returns:
+        Dict with rank (1-5), signal text, and metadata.
+        Returns empty dict if fetch fails.
+    """
+    url = f'https://www.zacks.com/stock/quote/{ticker.upper()}'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        resp = urllib.request.urlopen(req, timeout=15)
+        html = resp.read().decode('utf-8', errors='ignore')
+
+        # Extract Zacks Rank from the page
+        # The rank is typically in a span with class "rank_chip" or in data attributes
+        rank = None
+        rank_text = None
+
+        # Pattern 1: rank_chip class with rank number
+        match = re.search(r'class="rank_chip[^"]*ranklist_(\d)"', html)
+        if match:
+            rank = int(match.group(1))
+
+        # Pattern 2: zacks rank text
+        if not rank:
+            match = re.search(r'<p[^>]*class="rank_view"[^>]*>.*?(\d)\s*-\s*(Strong\s*Buy|Buy|Hold|Sell|Strong\s*Sell)', html, re.DOTALL | re.IGNORECASE)
+            if match:
+                rank = int(match.group(1))
+
+        # Pattern 3: Look for rank in JSON data on page
+        if not rank:
+            match = re.search(r'"zacks_rank"\s*:\s*"?(\d)"?', html)
+            if match:
+                rank = int(match.group(1))
+
+        # Pattern 4: Direct text match
+        if not rank:
+            match = re.search(r'Zacks\s+Rank\s*:?\s*#?(\d)\s*[-–]\s*(Strong\s*Buy|Buy|Hold|Sell|Strong\s*Sell)', html, re.IGNORECASE)
+            if match:
+                rank = int(match.group(1))
+
+        if rank and 1 <= rank <= 5:
+            rank_labels = {1: 'Strong Buy', 2: 'Buy', 3: 'Hold', 4: 'Sell', 5: 'Strong Sell'}
+            rank_colors = {1: '#22c55e', 2: '#4ade80', 3: '#fbbf24', 4: '#fb923c', 5: '#ef4444'}
+            return {
+                'rank': rank,
+                'signal': rank_labels.get(rank, 'Unknown'),
+                'color': rank_colors.get(rank, '#9ca3af'),
+                'source': 'Zacks Investment Research',
+                'description': 'Based on earnings estimate revisions by Wall Street analysts',
+                'available': True,
+            }
+
+        # If we got the page but couldn't parse the rank
+        print(f"  [ZACKS] Could not parse rank from page for {ticker}")
+        return {'available': False, 'reason': 'Could not parse Zacks Rank from page'}
+
+    except urllib.error.HTTPError as e:
+        print(f"  [ZACKS] HTTP {e.code} for {ticker}")
+        return {'available': False, 'reason': f'HTTP {e.code}'}
+    except Exception as e:
+        print(f"  [ZACKS] Error fetching Zacks rank for {ticker}: {e}")
+        return {'available': False, 'reason': str(e)}
+
+
 def generate_stock_analysis(financials: Dict, ticker: str, company: str, current_year: int) -> Dict:
     """
     Generate a comprehensive stock analysis from financial data.
@@ -1252,7 +1329,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
             // Recommendation Signal
             if (data.recommendation) {
-                html += renderRecommendation(data.recommendation);
+                html += renderRecommendation(data.recommendation, data.zacks);
             }
 
             const allSorted = risks.filter(r => r.status !== 'UNCHANGED').sort((a,b) => b.probability - a.probability);
@@ -1278,7 +1355,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
             container.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
-        function renderRecommendation(rec) {
+        function renderRecommendation(rec, zacks) {
             if (!rec || !rec.signal) return '';
 
             const bgColor = rec.signal === 'STRONG BUY' ? '#052e16' :
@@ -1287,11 +1364,44 @@ ANALYZE_PAGE = """<!DOCTYPE html>
                             rec.signal === 'SELL' ? '#431407' : '#450a0a';
             const borderColor = rec.color;
 
+            // Zacks section
+            let zacksHtml = '';
+            if (zacks && zacks.available) {
+                zacksHtml = `
+                    <div style="background:rgba(0,0,0,0.3);border-radius:8px;padding:16px;margin-top:16px;border:1px solid #374151;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div>
+                                <div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Zacks Rank (Wall Street Analysts)</div>
+                                <div style="font-size:24px;font-weight:700;color:${zacks.color};margin-top:4px;">#${zacks.rank} — ${zacks.signal}</div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="font-size:11px;color:#6b7280;">Based on earnings estimate<br>revisions by analysts</div>
+                            </div>
+                        </div>
+                        <p style="color:#9ca3af;font-size:12px;margin-top:8px;">
+                            <strong style="color:#e2e8f0;">What is Zacks Rank?</strong>
+                            Zacks tracks how Wall Street analysts change their earnings estimates.
+                            When analysts raise their estimates, Zacks considers that bullish (Strong Buy).
+                            When they cut estimates, it's bearish (Strong Sell).
+                            It's based on 4 factors: Agreement (are analysts moving in the same direction?),
+                            Magnitude (how big are the changes?), Upside (most accurate estimate vs consensus),
+                            and Surprise (recent earnings beat/miss history).
+                        </p>
+                    </div>
+                `;
+            } else if (zacks && !zacks.available) {
+                zacksHtml = `
+                    <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;margin-top:16px;">
+                        <span style="color:#6b7280;font-size:12px;">Zacks Rank: Not available (${zacks.reason || 'could not fetch'})</span>
+                    </div>
+                `;
+            }
+
             return `
                 <div style="background:${bgColor};border:2px solid ${borderColor};border-radius:12px;padding:28px;margin-bottom:24px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
                         <div>
-                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Signal</div>
+                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">ERPSA Signal (Text + Financials)</div>
                             <div style="font-size:36px;font-weight:800;color:${rec.color};letter-spacing:-1px;">${rec.emoji} ${rec.signal}</div>
                         </div>
                         <div style="text-align:right;">
@@ -1317,6 +1427,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
                             <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.avg_risk_probability.toFixed(0)}%</div>
                         </div>
                     </div>
+                    ${zacksHtml}
                     <div style="margin-top:12px;font-size:11px;color:#6b7280;text-align:center;">
                         This is a research signal based on textual analysis + financial data. Not investment advice. Always do your own due diligence.
                     </div>
@@ -1581,6 +1692,10 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             # ─── Recommendation ───
             recommendation = compute_recommendation(stock_analysis, risks)
 
+            # ─── Zacks Rank ───
+            print(f"  [ANALYZE] Fetching Zacks Rank...")
+            zacks_data = fetch_zacks_rank(ticker)
+
             result = {
                 'ticker': ticker,
                 'current_year': current_filing.get('year', 0),
@@ -1590,6 +1705,7 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 'total_prior': len(sections_prior),
                 'stock_analysis': stock_analysis,
                 'recommendation': recommendation,
+                'zacks': zacks_data,
             }
 
             print(f"  [ANALYZE] Complete. {len(risks)} risks scored.")
