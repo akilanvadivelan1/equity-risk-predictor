@@ -107,6 +107,7 @@ def fetch_filing_text(filing: Dict) -> str:
 
     cik = filing['cik']
     accession = filing['accession']
+    accession_raw = filing.get('accession_raw', '')
     primary_doc = filing['primary_doc']
 
     # Try to get the filing document
@@ -115,7 +116,7 @@ def fetch_filing_text(filing: Dict) -> str:
 
     req = urllib.request.Request(url, headers=SEC_HEADERS)
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=60)
         html = resp.read().decode('utf-8', errors='ignore')
 
         # Extract Item 1A section
@@ -123,64 +124,183 @@ def fetch_filing_text(filing: Dict) -> str:
 
         if item1a_text and len(item1a_text) > 500:
             _filing_cache[cache_key] = item1a_text
+            print(f"  [EDGAR] Extracted {len(item1a_text)} chars of Item 1A text")
             return item1a_text
-        else:
-            # Fallback: return a message
-            return f"[Could not extract Item 1A from this filing. The document may use a non-standard format. Filing URL: {url}]"
+
+        # ─── Fallback 1: Try the filing index to find other documents ───
+        print(f"  [EDGAR] Primary doc extraction failed, trying filing index...")
+        index_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/"
+        req2 = urllib.request.Request(index_url, headers=SEC_HEADERS)
+        try:
+            resp2 = urllib.request.urlopen(req2, timeout=30)
+            index_html = resp2.read().decode('utf-8', errors='ignore')
+
+            # Look for .htm files in the index (exclude the primary doc we already tried)
+            htm_files = re.findall(r'href="([^"]+\.htm)"', index_html, re.IGNORECASE)
+            htm_files = [f for f in htm_files if f != primary_doc and 'R' not in f[:2]]
+
+            for alt_doc in htm_files[:5]:  # Try up to 5 alternative documents
+                alt_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{alt_doc}"
+                print(f"  [EDGAR] Trying alternative: {alt_doc}")
+                try:
+                    req3 = urllib.request.Request(alt_url, headers=SEC_HEADERS)
+                    resp3 = urllib.request.urlopen(req3, timeout=30)
+                    alt_html = resp3.read().decode('utf-8', errors='ignore')
+                    alt_text = extract_item_1a(alt_html)
+                    if alt_text and len(alt_text) > 500:
+                        _filing_cache[cache_key] = alt_text
+                        print(f"  [EDGAR] Success with {alt_doc}: {len(alt_text)} chars")
+                        return alt_text
+                except:
+                    continue
+                time.sleep(0.3)  # Rate limit courtesy
+        except Exception as e2:
+            print(f"  [EDGAR] Index fallback failed: {e2}")
+
+        # ─── Fallback 2: Try the full-text submission viewer ───
+        print(f"  [EDGAR] Trying full submission text...")
+        full_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/0000000000-00-000000-index.htm"
+        # Actually, try the raw filing text
+        txt_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{accession_raw.replace('-','')}.txt" if accession_raw else None
+        if txt_url:
+            try:
+                req4 = urllib.request.Request(txt_url, headers=SEC_HEADERS)
+                resp4 = urllib.request.urlopen(req4, timeout=60)
+                full_text = resp4.read().decode('utf-8', errors='ignore')
+                full_item1a = extract_item_1a(full_text)
+                if full_item1a and len(full_item1a) > 500:
+                    _filing_cache[cache_key] = full_item1a
+                    print(f"  [EDGAR] Success with full text: {len(full_item1a)} chars")
+                    return full_item1a
+            except:
+                pass
+
+        return f"[Could not extract Item 1A from this filing. Tried primary document and alternatives. The filing may use a format our parser cannot yet handle. Filing URL: {url}]"
     except Exception as e:
         print(f"  [EDGAR] Error fetching document: {e}")
         return f"[Error fetching filing: {str(e)}]"
 
 
 def extract_item_1a(html: str) -> str:
-    """Extract Item 1A (Risk Factors) section from a 10-K HTML document."""
-    # Strategy: find "Item 1A" header, then grab text until "Item 1B" or "Item 2"
+    """
+    Extract Item 1A (Risk Factors) section from a 10-K HTML document.
 
-    # Common patterns for Item 1A start
-    start_patterns = [
-        re.compile(r'(?:Item|ITEM)\s*1A[\.\s\—\-]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)', re.IGNORECASE),
-        re.compile(r'>Item\s*1A\b.*?Risk\s*Factor', re.IGNORECASE | re.DOTALL),
-    ]
-
-    # Common patterns for Item 1A end
-    end_patterns = [
-        re.compile(r'(?:Item|ITEM)\s*1B[\.\s\—\-]', re.IGNORECASE),
-        re.compile(r'(?:Item|ITEM)\s*2[\.\s\—\-]', re.IGNORECASE),
-    ]
-
+    Handles multiple formats:
+    - Standard HTML filings with clear Item headers
+    - Inline XBRL (iXBRL) filings (modern format used by Apple, etc.)
+    - Filings with table of contents (skips TOC entries)
+    - Filings with various formatting styles (bold, caps, spans, divs)
+    """
     text = html
 
-    # Find start
-    start_pos = None
-    for pattern in start_patterns:
-        match = pattern.search(text)
-        if match:
-            start_pos = match.start()
-            break
+    # ─── Strategy 1: Find ALL occurrences of Item 1A, skip TOC entries ───
+    # The trick: Table of Contents entries are SHORT (just a link/reference)
+    # The ACTUAL section header is followed by substantial content
 
-    if start_pos is None:
+    # Broader set of start patterns to catch more formatting styles
+    start_patterns = [
+        # Standard patterns
+        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s*1A[\.\s\u2014\u2013\-:]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)', re.IGNORECASE),
+        re.compile(r'(?:Item|ITEM)\s+1A[\.\s\u2014\u2013\-:]+\s*Risk\s*Factor', re.IGNORECASE),
+        re.compile(r'<b[^>]*>\s*Item\s*1A', re.IGNORECASE),
+        re.compile(r'<span[^>]*>\s*Item\s*1A', re.IGNORECASE),
+        re.compile(r'font-weight:\s*(?:bold|700)[^>]*>\s*Item\s*1A', re.IGNORECASE),
+        # XBRL-tagged
+        re.compile(r'<ix:[^>]*>\s*Item\s*1A', re.IGNORECASE),
+        # Just "ITEM 1A" in caps (common in older filings)
+        re.compile(r'ITEM\s+1A\.?\s+RISK\s+FACTORS', re.IGNORECASE),
+    ]
+
+    # End patterns (Item 1B or Item 2)
+    end_patterns = [
+        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s*1B[\.\s\u2014\u2013\-:]*\s*(?:Unresolved|UNRESOLVED)', re.IGNORECASE),
+        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s+1B[\.\s\u2014\u2013\-:]', re.IGNORECASE),
+        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s+2[\.\s\u2014\u2013\-:]+\s*(?:Propert|PROPERT)', re.IGNORECASE),
+        re.compile(r'(?:Item|ITEM)\s+2[\.\s\u2014\u2013\-:]+\s*Propert', re.IGNORECASE),
+        re.compile(r'ITEM\s+1B\.?\s', re.IGNORECASE),
+        re.compile(r'ITEM\s+2\.?\s+PROPERTIES', re.IGNORECASE),
+    ]
+
+    # Find ALL start matches
+    all_starts = []
+    for pattern in start_patterns:
+        for match in pattern.finditer(text):
+            all_starts.append(match.start())
+
+    if not all_starts:
+        # Last resort: very broad search
+        broad = re.compile(r'Item\s*1A', re.IGNORECASE)
+        for match in broad.finditer(text):
+            all_starts.append(match.start())
+
+    if not all_starts:
         return ""
 
-    # Find end (search after start)
+    # Sort and deduplicate (keep unique positions that are >500 chars apart)
+    all_starts.sort()
+    unique_starts = [all_starts[0]]
+    for s in all_starts[1:]:
+        if s - unique_starts[-1] > 500:
+            unique_starts.append(s)
+
+    # Strategy: The REAL Item 1A content section is the one followed by the most text
+    # before Item 1B/2. TOC entries are followed by very little before the next item.
+    best_start = None
+    best_length = 0
+
+    for start_pos in unique_starts:
+        # Find end after this start
+        end_pos = len(text)
+        for pattern in end_patterns:
+            match = pattern.search(text, start_pos + 200)
+            if match:
+                end_pos = min(end_pos, match.start())
+                break
+
+        section_length = end_pos - start_pos
+
+        # Skip if too short (likely a TOC entry or heading reference)
+        if section_length < 2000:
+            continue
+
+        # The longest section is most likely the actual content
+        if section_length > best_length:
+            best_length = section_length
+            best_start = start_pos
+
+    if best_start is None:
+        # Fallback: just use the last occurrence (usually the content, not TOC)
+        best_start = unique_starts[-1]
+
+    # Find end from best start
     end_pos = len(text)
     for pattern in end_patterns:
-        match = pattern.search(text, start_pos + 100)
+        match = pattern.search(text, best_start + 200)
         if match:
-            end_pos = min(end_pos, match.start())
-            break
+            candidate = match.start()
+            if candidate < end_pos:
+                end_pos = candidate
 
     # Extract the section
-    section_html = text[start_pos:end_pos]
+    section_html = text[best_start:end_pos]
 
     # Clean HTML
     cleaned = clean_text_preserve_structure(section_html)
 
-    # Remove the "Item 1A. Risk Factors" header itself
-    cleaned = re.sub(r'^.*?(?:Risk\s*Factors|RISK\s*FACTORS)\s*', '', cleaned, count=1)
+    # Remove any CSS/style artifacts that leak through at the beginning
+    cleaned = re.sub(r'^[^A-Za-z]*(?:font-[^"]*"?>?\s*)?', '', cleaned)
+
+    # Remove the "Item 1A. Risk Factors" header itself (may appear at the start)
+    cleaned = re.sub(r'^\s*(?:Item|ITEM)\s*1A[\.\s\u2014\u2013\-:]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)?\s*',
+                     '', cleaned, count=1)
+
+    # Remove any remaining page numbers or form references at the top
+    cleaned = re.sub(r'^\s*\d+\s*\n', '', cleaned)
+    cleaned = re.sub(r'^\s*(?:Table of Contents|INDEX)\s*\n', '', cleaned, flags=re.IGNORECASE)
 
     # Limit to reasonable size (some filings are enormous)
-    if len(cleaned) > 100000:
-        cleaned = cleaned[:100000]
+    if len(cleaned) > 150000:
+        cleaned = cleaned[:150000]
 
     return cleaned.strip()
 
