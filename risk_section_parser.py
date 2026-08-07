@@ -74,8 +74,31 @@ class RiskSectionParser:
         return self._parse_by_heuristic_breaks(text)
 
     def _parse_structured(self, text: str) -> List[RiskSection]:
-        """Parse text with paragraph breaks."""
+        """Parse text with paragraph breaks.
+        
+        Handles two common formats:
+        1. Traditional: ALL CAPS or Title Case header (no period), then body paragraphs
+        2. Modern (Apple-style): Short bold sentence ending in period, then body paragraphs
+           - Detected when a short paragraph (< 200 chars) is followed by longer paragraphs
+        """
         paragraphs = [p.strip() for p in re.split(r'\n\n+', text) if p.strip()]
+        
+        # First try: traditional title detection
+        sections = self._parse_structured_traditional(paragraphs)
+        if len(sections) >= 5:
+            return sections
+        
+        # Second try: sentence-title detection (Apple-style)
+        # Short paragraphs followed by longer ones are likely title + body
+        sections = self._parse_structured_sentence_titles(paragraphs)
+        if len(sections) >= 5:
+            return sections
+        
+        # Fall back to traditional with whatever we got
+        return sections if len(sections) >= 2 else self._parse_structured_traditional(paragraphs)
+
+    def _parse_structured_traditional(self, paragraphs: list) -> List[RiskSection]:
+        """Parse using traditional title detection (ALL CAPS, no period, etc.)."""
         sections = []
         current_title = None
         current_body_parts = []
@@ -99,6 +122,94 @@ class RiskSectionParser:
                 sections.append(RiskSection(title=current_title, body=body))
 
         return sections
+
+    def _parse_structured_sentence_titles(self, paragraphs: list) -> List[RiskSection]:
+        """
+        Parse Apple-style format where risk titles are short sentence paragraphs.
+        
+        Pattern: A short paragraph (< 200 chars, often ending in period) followed
+        by one or more longer paragraphs that elaborate on the risk.
+        
+        Example:
+            "The Company faces substantial competition in all its areas of business."
+            [followed by a 500+ char paragraph explaining the competition risk]
+        """
+        sections = []
+        current_title = None
+        current_body_parts = []
+
+        for para in paragraphs:
+            is_potential_title = self._is_sentence_title(para)
+
+            if is_potential_title:
+                # Save previous section
+                if current_title is not None and current_body_parts:
+                    body = ' '.join(current_body_parts)
+                    if len(body) >= self.min_body_length:
+                        sections.append(RiskSection(title=current_title, body=body))
+                current_title = para.strip()
+                current_body_parts = []
+            else:
+                if current_title is None:
+                    # First paragraph without a detected title — use it as title
+                    current_title = self._generate_title_from_content(para)
+                current_body_parts.append(para)
+
+        # Don't forget the last section
+        if current_title is not None and current_body_parts:
+            body = ' '.join(current_body_parts)
+            if len(body) >= self.min_body_length:
+                sections.append(RiskSection(title=current_title, body=body))
+
+        return sections
+
+    def _is_sentence_title(self, text: str) -> bool:
+        """
+        Detect Apple-style sentence titles.
+        
+        These are short paragraphs (< 200 chars) that describe a risk topic.
+        They often:
+        - Start with "The Company" or similar
+        - Are a single sentence
+        - End with a period
+        - Are significantly shorter than the paragraphs around them
+        """
+        s = text.strip()
+        
+        # Must be short (single sentence, not a full paragraph)
+        if len(s) > 200 or len(s) < 30:
+            return False
+        
+        # Should be a single sentence (no more than 1 sentence break)
+        sentence_count = len(re.findall(r'[.!?]\s+[A-Z]', s))
+        if sentence_count > 1:
+            return False
+        
+        # Common patterns for Apple-style risk titles
+        title_indicators = [
+            re.compile(r'^The\s+Company', re.IGNORECASE),
+            re.compile(r'^(?:The|Our)\s+Company\'?s?\s+\w+', re.IGNORECASE),
+            re.compile(r'^(?:Future|Global|International|New|Existing)\s+', re.IGNORECASE),
+            re.compile(r'^(?:Changes|Failure|Inability|Loss)\s+', re.IGNORECASE),
+            re.compile(r'(?:could|may|might)\s+(?:materially\s+)?(?:adversely\s+)?(?:affect|impact|harm)', re.IGNORECASE),
+            re.compile(r'(?:subject\s+to|dependent\s+on|exposed\s+to|faces?)\s+', re.IGNORECASE),
+        ]
+        
+        for pattern in title_indicators:
+            if pattern.search(s):
+                return True
+        
+        # Also: ALL CAPS short paragraph (traditional format)
+        if s.isupper() and len(s) < 120:
+            return True
+        
+        # Also: traditional non-period title
+        if not s.endswith('.') and len(s) < 150:
+            words = s.split()
+            if words and sum(1 for w in words if w[0].isupper()) / len(words) > 0.5:
+                return True
+        
+        return False
 
     def _parse_flat_by_title_patterns(self, text: str) -> List[RiskSection]:
         """Parse flat text by detecting title-like phrases."""
