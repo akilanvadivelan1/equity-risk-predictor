@@ -1726,7 +1726,7 @@ class ERPSAHandler(BaseHTTPRequestHandler):
 # =========================================================
 
 def main():
-    port = 8888
+    port = int(os.environ.get('PORT', 8888))
     server = HTTPServer(('0.0.0.0', port), ERPSAHandler)
 
     import webbrowser
@@ -1748,7 +1748,9 @@ def main():
 ║  Press Ctrl+C to stop                                          ║
 ╚══════════════════════════════════════════════════════════════════╝
 """)
-    webbrowser.open(f'http://localhost:{port}')
+    # Only auto-open browser when running locally (not on cloud servers)
+    if not os.environ.get('RENDER') and not os.environ.get('PORT'):
+        webbrowser.open(f'http://localhost:{port}')
 
     try:
         server.serve_forever()
