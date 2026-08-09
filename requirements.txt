@@ -7,6 +7,9 @@ edgartools>=0.30.0
 # HTML parsing (optional - pure Python fallback available)
 beautifulsoup4>=4.12.0
 
+# PostgreSQL database (for filing storage)
+psycopg2-binary>=2.9.0
+
 # Future: NLP/Sentiment (uncomment when needed)
 # transformers>=4.30.0
 # torch>=2.0.0
