@@ -99,11 +99,50 @@ def get_10k_filings(cik: str) -> List[Dict]:
     return []
 
 
+def _check_database(ticker: str, year: int) -> Optional[str]:
+    """Check if a filing is already in the PostgreSQL database."""
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url or not ticker or not year:
+        return None
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT item1a_text FROM filings WHERE ticker = %s AND year = %s AND item1a_length > 500",
+            (ticker.upper(), year)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except ImportError:
+        # psycopg2 not installed — skip database check
+        pass
+    except Exception as e:
+        print(f"  [DB] Database check failed (non-critical): {e}")
+    return None
+
+
 def fetch_filing_text(filing: Dict, ticker: str = '') -> str:
-    """Download and extract Item 1A from a 10-K filing."""
+    """Download and extract Item 1A from a 10-K filing.
+    
+    First checks the PostgreSQL database for pre-downloaded filings.
+    Falls back to live SEC EDGAR fetch if not in database.
+    """
     cache_key = filing.get('accession', '')
     if cache_key in _filing_cache:
         return _filing_cache[cache_key]
+
+    # ─── Check database first (instant if pre-downloaded) ───
+    year = filing.get('year', 0)
+    db_text = _check_database(ticker, year)
+    if db_text:
+        _filing_cache[cache_key] = db_text
+        print(f"  [DB] Found pre-downloaded filing for {ticker} {year} ({len(db_text):,} chars)")
+        return db_text
 
     cik = filing['cik']
     accession = filing['accession']
