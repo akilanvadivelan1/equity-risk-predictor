@@ -99,7 +99,7 @@ def get_10k_filings(cik: str) -> List[Dict]:
     return []
 
 
-def fetch_filing_text(filing: Dict) -> str:
+def fetch_filing_text(filing: Dict, ticker: str = '') -> str:
     """Download and extract Item 1A from a 10-K filing."""
     cache_key = filing.get('accession', '')
     if cache_key in _filing_cache:
@@ -157,12 +157,12 @@ def fetch_filing_text(filing: Dict) -> str:
         except Exception as e2:
             print(f"  [EDGAR] Index fallback failed: {e2}")
 
-        # ─── Fallback 2: Try the full-text submission viewer ───
+        # ─── Fallback 2: Try the full submission text file ───
         print(f"  [EDGAR] Trying full submission text...")
-        full_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/0000000000-00-000000-index.htm"
-        # Actually, try the raw filing text
-        txt_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{accession_raw.replace('-','')}.txt" if accession_raw else None
-        if txt_url:
+        # The full text file uses the accession number formatted with dashes
+        if accession_raw:
+            txt_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{accession_raw}.txt"
+            print(f"  [EDGAR] Full text URL: {txt_url}")
             try:
                 req4 = urllib.request.Request(txt_url, headers=SEC_HEADERS)
                 resp4 = urllib.request.urlopen(req4, timeout=60)
@@ -172,8 +172,64 @@ def fetch_filing_text(filing: Dict) -> str:
                     _filing_cache[cache_key] = full_item1a
                     print(f"  [EDGAR] Success with full text: {len(full_item1a)} chars")
                     return full_item1a
-            except:
-                pass
+            except Exception as e3:
+                print(f"  [EDGAR] Full text fallback failed: {e3}")
+
+        # ─── Fallback 3: Try SEC EDGAR viewer (sections API) ───
+        # This endpoint returns filing sections in a more parseable format
+        print(f"  [EDGAR] Trying EDGAR section viewer...")
+        try:
+            # Try the filing with .htm extension variations
+            base_name = primary_doc.rsplit('.', 1)[0] if '.' in primary_doc else primary_doc
+            for ext in ['.htm', '.html', '-0001.htm', '_htm.xml']:
+                try_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{base_name}{ext}"
+                try:
+                    req5 = urllib.request.Request(try_url, headers=SEC_HEADERS)
+                    resp5 = urllib.request.urlopen(req5, timeout=30)
+                    alt_html = resp5.read().decode('utf-8', errors='ignore')
+                    alt_text = extract_item_1a(alt_html)
+                    if alt_text and len(alt_text) > 500:
+                        _filing_cache[cache_key] = alt_text
+                        print(f"  [EDGAR] Success with {base_name}{ext}: {len(alt_text)} chars")
+                        return alt_text
+                except:
+                    continue
+        except:
+            pass
+
+        # ─── Fallback 4: Brute force — try ALL .htm files in the filing ───
+        print(f"  [EDGAR] Brute force: trying all available documents...")
+        try:
+            # Re-fetch index if needed and try ALL .htm/.html files
+            idx_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik.lstrip('0')}&type=10-K&dateb=&owner=include&count=1&search_text=&accession={accession_raw}"
+            # Actually just try common filing patterns
+            common_patterns = [
+                f"{ticker.lower()}-{filing.get('date','')[:4]}0928.htm",
+                f"{ticker.lower()}-{filing.get('date','')[:4]}1231.htm",
+                f"{ticker.lower()}-{filing.get('date','')[:4]}0630.htm",
+                f"{ticker.lower()}-{filing.get('date','')[:4]}0331.htm",
+                f"{ticker.lower()}20{filing.get('date','')[:4][-2:]}10k.htm",
+                "0001.htm",
+                "d10k.htm",
+                "form10-k.htm",
+                "form10k.htm",
+            ]
+            for pattern in common_patterns:
+                try_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{pattern}"
+                try:
+                    req6 = urllib.request.Request(try_url, headers=SEC_HEADERS)
+                    resp6 = urllib.request.urlopen(req6, timeout=20)
+                    alt_html = resp6.read().decode('utf-8', errors='ignore')
+                    alt_text = extract_item_1a(alt_html)
+                    if alt_text and len(alt_text) > 500:
+                        _filing_cache[cache_key] = alt_text
+                        print(f"  [EDGAR] Success with pattern {pattern}: {len(alt_text)} chars")
+                        return alt_text
+                except:
+                    continue
+                time.sleep(0.2)
+        except:
+            pass
 
         return f"[Could not extract Item 1A from this filing. Tried primary document and alternatives. The filing may use a format our parser cannot yet handle. Filing URL: {url}]"
     except Exception as e:
@@ -1625,11 +1681,11 @@ class ERPSAHandler(BaseHTTPRequestHandler):
 
             # Fetch filings
             print(f"  [ANALYZE] Fetching current year filing...")
-            current_text = fetch_filing_text(current_filing)
+            current_text = fetch_filing_text(current_filing, ticker)
             time.sleep(0.5)  # SEC rate limiting courtesy
 
             print(f"  [ANALYZE] Fetching prior year filing...")
-            prior_text = fetch_filing_text(prior_filing)
+            prior_text = fetch_filing_text(prior_filing, ticker)
 
             if current_text.startswith('[') or prior_text.startswith('['):
                 self._serve_json({
