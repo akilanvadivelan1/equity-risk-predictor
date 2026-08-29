@@ -160,9 +160,7 @@
     .paper { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
     .paper .p-head { padding: 20px 24px; cursor: pointer; display: flex; align-items: flex-start; gap: 16px; }
     .paper .p-head:hover { background: var(--bg-alt); }
-    .paper .p-badge { flex-shrink: 0; font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; margin-top: 2px; }
-    .paper .p-badge.uw { background: #4b2e83; color: #fff; }
-    .paper .p-badge.core { background: var(--accent-soft); color: var(--accent); }
+    .paper .p-badge { flex-shrink: 0; width: 108px; text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.2px; padding: 6px 8px; border-radius: 8px; margin-top: 1px; background: var(--accent-soft); color: var(--accent); line-height: 1.3; }
     .paper .p-main { flex: 1; }
     .paper .p-title { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.35; }
     .paper .p-meta { font-size: 13px; color: var(--slate); margin-top: 4px; }
@@ -594,106 +592,113 @@
         This project takes its inspiration from finance and accounting professors who have studied, over many years,
         how the risk language in company filings can foreshadow what comes next. S&amp;P 500 Risk Radar does not claim
         new research. It is a student's attempt to explore, in real companies, whether the patterns these researchers
-        described actually show up in the real world. Two of the papers below come from the University of Washington.
+        described actually show up in the real world. The papers below are the foundation for that idea.
     </p>
 
     <div class="papers">
-        <!-- UW paper 1 -->
+        <!-- Lazy Prices -->
         <div class="paper">
             <div class="p-head" onclick="togglePaper(this)">
-                <span class="p-badge uw">Univ. of Washington</span>
-                <div class="p-main">
-                    <div class="p-title">Textual Risk Disclosures and Investors' Risk Perceptions</div>
-                    <div class="p-meta">Kravet and Muslu (2013) &middot; Review of Accounting Studies</div>
-                </div>
-                <span class="p-toggle">+</span>
-            </div>
-            <div class="p-detail">
-                <p>Studied what happens when firms increase their risk language from one year to the next. They found that year over year increases in risk disclosure are followed by higher stock return volatility and trading volume around and after the filing, along with more spread out analyst forecasts. In short, more risk language is associated with markets seeing the firm as riskier. Volkan Muslu conducted this work while at the University of Washington's Foster School of Business.</p>
-                <a href="https://link.springer.com/doi/10.1007/s11142-013-9228-9" target="_blank" rel="noopener">View the paper &#8599;</a>
-            </div>
-        </div>
-
-        <!-- UW paper 2 -->
-        <div class="paper">
-            <div class="p-head" onclick="togglePaper(this)">
-                <span class="p-badge uw">Univ. of Washington</span>
-                <div class="p-main">
-                    <div class="p-title">Research on corporate disclosure and its market consequences</div>
-                    <div class="p-meta">Sarah McVay and co-authors &middot; Foster School of Business</div>
-                </div>
-                <span class="p-toggle">+</span>
-            </div>
-            <div class="p-detail">
-                <p>Sarah McVay is a professor of accounting at the University of Washington's Foster School of Business whose research examines what companies reveal in their filings and how those choices affect the market. Her broader body of work supports the core idea behind this project, that the words companies use in their reports carry information that markets do not always price right away.</p>
-                <a href="https://foster.uw.edu/faculty-research/directory/sarah-mcvay/" target="_blank" rel="noopener">View faculty profile &#8599;</a>
-            </div>
-        </div>
-
-        <!-- Core paper: Lazy Prices -->
-        <div class="paper">
-            <div class="p-head" onclick="togglePaper(this)">
-                <span class="p-badge core">Seminal</span>
+                <span class="p-badge">Harvard &amp; DePaul</span>
                 <div class="p-main">
                     <div class="p-title">Lazy Prices</div>
-                    <div class="p-meta">Cohen, Malloy, and Nguyen (2020) &middot; The Journal of Finance</div>
+                    <div class="p-meta">Lauren Cohen, Christopher Malloy, and Quoc Nguyen (2020) &middot; The Journal of Finance</div>
                 </div>
                 <span class="p-toggle">+</span>
             </div>
             <div class="p-detail">
-                <p>The anchor paper for this project. It showed that changes in the language of a company's filings, especially in the risk and management sections, predict weaker future returns. A strategy of buying companies whose filings barely changed and selling those whose filings changed a lot earned roughly 22 percent per year. The reason it works is investor inattention. Almost nobody reads these long documents closely.</p>
+                <p>The anchor paper for this project. Studying two decades of company filings, the authors showed that changes in filing language, especially in the risk and management sections, predict weaker future returns. A strategy of buying companies whose filings barely changed and selling those whose filings changed a lot earned roughly 22 percent per year. The reason it works is investor inattention. Almost nobody reads these long documents closely.</p>
                 <a href="https://onlinelibrary.wiley.com/doi/10.1111/jofi.12885" target="_blank" rel="noopener">View the paper &#8599;</a>
             </div>
         </div>
 
-        <!-- Core paper: Campbell et al -->
+        <!-- Loughran McDonald -->
         <div class="paper">
             <div class="p-head" onclick="togglePaper(this)">
-                <span class="p-badge core">Foundational</span>
+                <span class="p-badge">Notre Dame</span>
                 <div class="p-main">
-                    <div class="p-title">The Information Content of Mandatory Risk Factor Disclosures in Corporate Filings</div>
-                    <div class="p-meta">Campbell, Chen, Dhaliwal, Lu, and Steele (2014) &middot; Review of Accounting Studies</div>
+                    <div class="p-title">When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks</div>
+                    <div class="p-meta">Tim Loughran and Bill McDonald (2011) &middot; The Journal of Finance</div>
                 </div>
                 <span class="p-toggle">+</span>
             </div>
             <div class="p-detail">
-                <p>Examined whether the risk factor section is meaningful or just boilerplate. They found that firms facing greater risk disclose more risk factors, and that the type of risk a firm describes, whether financial, legal, or otherwise, lines up with the actual risk it faces. This supports the idea that the risk section carries real information about the company.</p>
+                <p>Built the finance specific word lists that this project relies on for reading tone. The authors showed that general purpose sentiment dictionaries misread financial writing, because words like liability or tax are neutral in a finance context. Their negative and uncertainty word lists became the standard tool for measuring tone in filings, and Risk Radar uses this approach for the words half of its analysis.</p>
+                <a href="https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.2010.01625.x" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Campbell et al -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Georgia &amp; Arizona</span>
+                <div class="p-main">
+                    <div class="p-title">The Information Content of Mandatory Risk Factor Disclosures in Corporate Filings</div>
+                    <div class="p-meta">John Campbell, Hsinchun Chen, Dan Dhaliwal, Hsin-min Lu, and Logan Steele (2014) &middot; Review of Accounting Studies</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Examined whether the risk factor section is meaningful or just boilerplate. The authors found that firms facing greater risk disclose more risk factors, and that the type of risk a firm describes, whether financial, legal, or otherwise, lines up with the actual risk it faces. This supports the idea that the risk section carries real information about the company.</p>
                 <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1694279" target="_blank" rel="noopener">View the paper &#8599;</a>
             </div>
         </div>
 
-        <!-- Core paper: Loughran McDonald -->
+        <!-- Kravet Muslu -->
         <div class="paper">
             <div class="p-head" onclick="togglePaper(this)">
-                <span class="p-badge core">Method</span>
+                <span class="p-badge">UConn &amp; UT Dallas</span>
                 <div class="p-main">
-                    <div class="p-title">When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks</div>
-                    <div class="p-meta">Loughran and McDonald (2011) &middot; The Journal of Finance</div>
+                    <div class="p-title">Textual Risk Disclosures and Investors' Risk Perceptions</div>
+                    <div class="p-meta">Todd Kravet and Volkan Muslu (2013) &middot; Review of Accounting Studies</div>
                 </div>
                 <span class="p-toggle">+</span>
             </div>
             <div class="p-detail">
-                <p>Built the finance specific word lists that this project relies on for reading tone. They showed that general purpose sentiment dictionaries misread financial writing, because words like liability or tax are neutral in finance. Their negative and uncertainty word lists are the standard tool for measuring tone in filings, and Risk Radar uses this approach for the words half of its analysis.</p>
-                <a href="https://onlinelibrary.wiley.com/doi/10.1111/j.1540-6261.2010.01625.x" target="_blank" rel="noopener">View the paper &#8599;</a>
+                <p>Studied what happens when a firm increases its risk language from one year to the next. The authors found that these annual increases are followed by higher stock return volatility and trading volume around and after the filing, along with more spread out analyst forecasts. In short, when companies say more about risk, the market treats them as riskier.</p>
+                <a href="https://link.springer.com/article/10.1007/s11142-013-9228-9" target="_blank" rel="noopener">View the paper &#8599;</a>
             </div>
         </div>
 
-        <!-- Core paper: crash risk -->
+        <!-- Hope Hu Lu -->
         <div class="paper">
             <div class="p-head" onclick="togglePaper(this)">
-                <span class="p-badge core">Recent</span>
+                <span class="p-badge">Toronto</span>
                 <div class="p-main">
-                    <div class="p-title">Textual Changes in 10-Ks and Future Stock Price Crash Risk</div>
-                    <div class="p-meta">Working paper &middot; American Finance Association</div>
+                    <div class="p-title">The Benefits of Specific Risk-Factor Disclosures</div>
+                    <div class="p-meta">Ole-Kristian Hope, Danqi Hu, and Hai Lu (2016) &middot; Review of Accounting Studies</div>
                 </div>
                 <span class="p-toggle">+</span>
             </div>
             <div class="p-detail">
-                <p>Extends the Lazy Prices idea toward downside risk specifically. It reports that changes in the text of a company's 10-K have a meaningful positive effect on the chance of a stock price crash in the following year, and that investors overlooking these textual changes can have real consequences in the market.</p>
-                <a href="https://afajof.org/management/viewp.php?n=56560" target="_blank" rel="noopener">View the summary &#8599;</a>
+                <p>Asked whether it matters how specific a risk factor is, rather than just how many there are. The authors found that more specific risk factors, as opposed to vague boilerplate, are more useful to investors and analysts. This matters for Risk Radar, because a generic warning and a concrete, detailed one are not the same signal.</p>
+                <a href="https://link.springer.com/article/10.1007/s11142-016-9371-1" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Gaulin -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Rice</span>
+                <div class="p-main">
+                    <div class="p-title">The Information Content of Risk Factor Disclosures in Quarterly Reports</div>
+                    <div class="p-meta">Maclean Gaulin (2015) &middot; Accounting Horizons</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Looked at what happens when firms update their risk factors during the year. The study found that companies that add or change risk factors tend to have lower future unexpected earnings and are more likely to suffer sharp negative earnings surprises. In other words, updates to the risk section often arrive as an early warning of bad news.</p>
+                <a href="https://publications.aaahq.org/accounting-horizons/article-abstract/29/4/887/2223/" target="_blank" rel="noopener">View the paper &#8599;</a>
             </div>
         </div>
     </div>
+
+    <p class="intro-note" style="margin-top:36px; margin-bottom:0; font-size:13.5px; color:var(--slate);">
+        A note on Washington state. The landmark Lazy Prices research was presented at the University of Washington
+        and Washington State University while it was being developed, and the Foster School of Business at the
+        University of Washington has active researchers in financial reporting and disclosure. This work has deep
+        roots close to home.
+    </p>
 </section>
 
 <!-- ============ ABOUT ============ -->
