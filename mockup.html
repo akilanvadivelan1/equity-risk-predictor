@@ -108,7 +108,7 @@
 
     /* ---------- Learning ---------- */
     .learn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; max-width: 1000px; margin: 0 auto; }
-    .learn-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); transition: transform 0.15s, box-shadow 0.15s; text-decoration: none; display: block; }
+    .learn-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); transition: transform 0.15s, box-shadow 0.15s; text-decoration: none; display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer; padding: 0; }
     .learn-card:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(15,23,42,0.1); }
     .learn-card .thumb { height: 8px; }
     .learn-card .thumb.t1 { background: linear-gradient(90deg, #f59e0b, #dc2626); }
@@ -139,6 +139,40 @@
     .research .big span { display: block; font-size: 14px; color: #94a3b8; font-weight: 500; margin-top: 8px; letter-spacing: 0; }
     .research h3 { font-size: 24px; margin-bottom: 12px; }
     .research p { color: #cbd5e1; font-size: 15px; line-height: 1.65; }
+
+    /* ---------- Case study detail (inline expandable) ---------- */
+    .case-detail { display: none; max-width: 820px; margin: 32px auto 0; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+    .case-detail.open { display: block; }
+    .case-detail .cd-head { padding: 24px 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .case-detail .cd-head .cd-title { font-size: 20px; font-weight: 800; color: var(--ink); }
+    .case-detail .cd-head .cd-tag { font-size: 12px; color: var(--slate); margin-top: 4px; }
+    .case-detail .cd-close { border: 1px solid var(--line); background: #fff; color: var(--slate); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; }
+    .case-detail .cd-close:hover { border-color: var(--accent); color: var(--accent); }
+    .case-detail .cd-body { padding: 26px 28px; }
+    .case-detail .cd-body h5 { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--accent); margin: 18px 0 6px; }
+    .case-detail .cd-body h5:first-child { margin-top: 0; }
+    .case-detail .cd-body p { font-size: 15px; color: #334155; line-height: 1.7; }
+    .case-detail .cd-note { margin-top: 22px; padding: 12px 16px; background: var(--accent-soft); border-radius: 10px; font-size: 13px; color: #1e3a8a; }
+
+    /* ---------- Academic research ---------- */
+    .intro-note { max-width: 720px; margin: 0 auto 40px; text-align: center; color: #334155; font-size: 15.5px; line-height: 1.7; }
+    .papers { max-width: 1000px; margin: 0 auto; display: grid; gap: 16px; }
+    .paper { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+    .paper .p-head { padding: 20px 24px; cursor: pointer; display: flex; align-items: flex-start; gap: 16px; }
+    .paper .p-head:hover { background: var(--bg-alt); }
+    .paper .p-badge { flex-shrink: 0; font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; margin-top: 2px; }
+    .paper .p-badge.uw { background: #4b2e83; color: #fff; }
+    .paper .p-badge.core { background: var(--accent-soft); color: var(--accent); }
+    .paper .p-main { flex: 1; }
+    .paper .p-title { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.35; }
+    .paper .p-meta { font-size: 13px; color: var(--slate); margin-top: 4px; }
+    .paper .p-toggle { flex-shrink: 0; color: var(--slate); font-size: 20px; line-height: 1; transition: transform 0.2s; margin-top: 2px; }
+    .paper.open .p-toggle { transform: rotate(45deg); }
+    .paper .p-detail { display: none; padding: 0 24px 22px 24px; }
+    .paper.open .p-detail { display: block; }
+    .paper .p-detail p { font-size: 14.5px; color: #334155; line-height: 1.65; }
+    .paper .p-detail a { color: var(--accent); font-weight: 600; text-decoration: none; font-size: 14px; display: inline-block; margin-top: 10px; }
+    .paper .p-detail a:hover { text-decoration: underline; }
 
     .footer { padding: 40px 0; text-align: center; color: var(--slate); font-size: 12.5px; line-height: 1.7; border-top: 1px solid var(--line); }
 
@@ -171,6 +205,7 @@
             <a href="#top">Home</a>
             <a href="#">Analyze</a>
             <a href="#learning">Learning</a>
+            <a href="#research">Research</a>
             <a href="https://akilanvadivelan.substack.com" target="_blank" rel="noopener">Substack <span class="ext">&#8599;</span></a>
             <a href="#about">About</a>
         </div>
@@ -188,7 +223,7 @@
         Every S&amp;P 500 company reveals what is going wrong, in the <b>numbers behind its business</b>
         (profits, debt, inventory, cash flow) and in the <b>risk warnings inside its own reports</b>.
         S&amp;P 500 Risk Radar examines both closely, tracks what has changed since last year, and
-        surfaces the signals before the price catches up.
+        surfaces the signals before the stock price falls.
     </p>
     <a href="#" class="cta">Start Analysis</a>
     <a href="#examples" class="cta ghost">See real examples</a>
@@ -453,32 +488,89 @@
         <p>Short, plain English case studies on the risks we find hiding inside company reports.</p>
     </div>
     <div class="learn-grid">
-        <a class="learn-card" href="#">
+        <button class="learn-card" onclick="openCase('tgt')">
             <div class="thumb t1"></div>
             <div class="body">
                 <div class="meta">Case study &middot; Retail</div>
-                <h4>What Target's 2022 filing quietly said before the crash</h4>
-                <p>How one phrase about excess inventory foreshadowed the worst trading day in 35 years.</p>
+                <h4>What Target's 2022 filing quietly said before the fall</h4>
+                <p>How language about excess inventory foreshadowed the worst trading day in 35 years.</p>
             </div>
-        </a>
-        <a class="learn-card" href="#">
+        </button>
+        <button class="learn-card" onclick="openCase('luv')">
             <div class="thumb t2"></div>
             <div class="body">
                 <div class="meta">Case study &middot; Airlines</div>
                 <h4>Southwest warned about its own systems for years</h4>
                 <p>An operational risk sat in plain sight until a winter storm turned it into a meltdown.</p>
             </div>
-        </a>
-        <a class="learn-card" href="#">
+        </button>
+        <button class="learn-card" onclick="openCase('sivb')">
             <div class="thumb t3"></div>
             <div class="body">
                 <div class="meta">Case study &middot; Banking</div>
                 <h4>The interest rate risk that ended Silicon Valley Bank</h4>
-                <p>A bond portfolio and a concentrated deposit base, both disclosed, both ignored.</p>
+                <p>A bond portfolio and a concentrated deposit base, both public, both overlooked.</p>
             </div>
-        </a>
+        </button>
     </div>
-    <div class="learn-more"><a href="#">View all case studies &#8594;</a></div>
+
+    <!-- Inline expandable case study details -->
+    <div id="case-tgt" class="case-detail">
+        <div class="cd-head">
+            <div>
+                <div class="cd-title">Target (TGT), 2022</div>
+                <div class="cd-tag">Retail &middot; the profit squeeze that showed up in words first</div>
+            </div>
+            <button class="cd-close" onclick="closeCase()">Close</button>
+        </div>
+        <div class="cd-body">
+            <h5>What changed in the filing</h5>
+            <p>Compared with the prior year, Target's risk language grew more specific about excess inventory, supply chain disruption, and rising costs. The calm, repeated boilerplate of earlier filings gave way to sharper, more concrete warnings.</p>
+            <h5>What happened next</h5>
+            <p>On May 18, 2022, Target reported first quarter results and cut its operating margin outlook from over 8 percent to about 6 percent, pointing to the same inventory and cost pressures. The stock fell 24.9 percent in a single session to $161.61, its worst day since 1987, erasing roughly $25 billion in value.</p>
+            <h5>The takeaway</h5>
+            <p>The numbers still looked healthy on the surface. The words were already less confident. Reading both together gave a fuller picture than watching the price alone.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+        </div>
+    </div>
+
+    <div id="case-luv" class="case-detail">
+        <div class="cd-head">
+            <div>
+                <div class="cd-title">Southwest Airlines (LUV), 2022</div>
+                <div class="cd-tag">Airlines &middot; a known operational risk that finally broke</div>
+            </div>
+            <button class="cd-close" onclick="closeCase()">Close</button>
+        </div>
+        <div class="cd-body">
+            <h5>What the filing said</h5>
+            <p>For years, Southwest's filings flagged its reliance on aging technology and crew scheduling systems as an operational risk. The warning was consistent and public, but it read as routine and drew little attention.</p>
+            <h5>What happened next</h5>
+            <p>A severe winter storm in December 2022 overwhelmed those very systems, forcing thousands of cancellations and stranding travelers over the holidays. The stock fell about 15.6 percent that month as the meltdown played out.</p>
+            <h5>The takeaway</h5>
+            <p>A risk that a company repeats year after year is easy to tune out. Tracking which disclosed risks are most exposed can help decide which ones deserve a second look.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+        </div>
+    </div>
+
+    <div id="case-sivb" class="case-detail">
+        <div class="cd-head">
+            <div>
+                <div class="cd-title">SVB Financial, Silicon Valley Bank (SIVB), 2022 to 2023</div>
+                <div class="cd-tag">Banking &middot; interest rate risk that was disclosed all along</div>
+            </div>
+            <button class="cd-close" onclick="closeCase()">Close</button>
+        </div>
+        <div class="cd-body">
+            <h5>What the filing said</h5>
+            <p>SVB's filings described a large bond portfolio exposed to rising interest rates and a deposit base heavily concentrated in technology startups. Both of these were stated plainly in its reports.</p>
+            <h5>What happened next</h5>
+            <p>As rates rose through 2022, the stock drifted down from about $559 to the low $200s. In March 2023 the bank sold bonds at a loss and tried to raise capital. Depositors rushed to withdraw, the stock crashed from about $268 to $106 on March 9, and trading was halted on March 10 as regulators closed the bank.</p>
+            <h5>The takeaway</h5>
+            <p>The two ingredients of the failure were both in the filings well before the collapse. The story moved slowly for a year, then very fast in a matter of days.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+        </div>
+    </div>
 </section>
 
 <!-- ============ RESEARCH STRIP ============ -->
@@ -486,8 +578,120 @@
     <div class="wrap">
         <div class="big">22%<span>per year in abnormal returns (Lazy Prices, 2020)</span></div>
         <div>
-            <h3>Grounded in academic research</h3>
-            <p>Cohen, Malloy, and Nguyen found that buying companies whose filings barely changed, and selling those whose filings changed a lot, earned roughly 22 percent per year. Textual changes predict future problems, yet almost nobody reads these documents. That gap is the opportunity.</p>
+            <h3>Grounded in decades of research</h3>
+            <p>The finding that filing language predicts future problems is not new. In one landmark study, buying companies whose filings barely changed and selling those whose filings changed a lot earned roughly 22 percent per year. The reason it keeps working is that almost nobody reads these documents. See the papers below, including two from the University of Washington.</p>
+        </div>
+    </div>
+</section>
+
+<!-- ============ ACADEMIC RESEARCH ============ -->
+<section id="research">
+    <div class="section-head">
+        <div class="kicker">Academic Research</div>
+        <h3>Standing on the work of others</h3>
+    </div>
+    <p class="intro-note">
+        This project takes its inspiration from finance and accounting professors who have studied, over many years,
+        how the risk language in company filings can foreshadow what comes next. S&amp;P 500 Risk Radar does not claim
+        new research. It is a student's attempt to explore, in real companies, whether the patterns these researchers
+        described actually show up in the real world. Two of the papers below come from the University of Washington.
+    </p>
+
+    <div class="papers">
+        <!-- UW paper 1 -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge uw">Univ. of Washington</span>
+                <div class="p-main">
+                    <div class="p-title">Textual Risk Disclosures and Investors' Risk Perceptions</div>
+                    <div class="p-meta">Kravet and Muslu (2013) &middot; Review of Accounting Studies</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Studied what happens when firms increase their risk language from one year to the next. They found that year over year increases in risk disclosure are followed by higher stock return volatility and trading volume around and after the filing, along with more spread out analyst forecasts. In short, more risk language is associated with markets seeing the firm as riskier. Volkan Muslu conducted this work while at the University of Washington's Foster School of Business.</p>
+                <a href="https://link.springer.com/doi/10.1007/s11142-013-9228-9" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- UW paper 2 -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge uw">Univ. of Washington</span>
+                <div class="p-main">
+                    <div class="p-title">Research on corporate disclosure and its market consequences</div>
+                    <div class="p-meta">Sarah McVay and co-authors &middot; Foster School of Business</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Sarah McVay is a professor of accounting at the University of Washington's Foster School of Business whose research examines what companies reveal in their filings and how those choices affect the market. Her broader body of work supports the core idea behind this project, that the words companies use in their reports carry information that markets do not always price right away.</p>
+                <a href="https://foster.uw.edu/faculty-research/directory/sarah-mcvay/" target="_blank" rel="noopener">View faculty profile &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Core paper: Lazy Prices -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge core">Seminal</span>
+                <div class="p-main">
+                    <div class="p-title">Lazy Prices</div>
+                    <div class="p-meta">Cohen, Malloy, and Nguyen (2020) &middot; The Journal of Finance</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>The anchor paper for this project. It showed that changes in the language of a company's filings, especially in the risk and management sections, predict weaker future returns. A strategy of buying companies whose filings barely changed and selling those whose filings changed a lot earned roughly 22 percent per year. The reason it works is investor inattention. Almost nobody reads these long documents closely.</p>
+                <a href="https://onlinelibrary.wiley.com/doi/10.1111/jofi.12885" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Core paper: Campbell et al -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge core">Foundational</span>
+                <div class="p-main">
+                    <div class="p-title">The Information Content of Mandatory Risk Factor Disclosures in Corporate Filings</div>
+                    <div class="p-meta">Campbell, Chen, Dhaliwal, Lu, and Steele (2014) &middot; Review of Accounting Studies</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Examined whether the risk factor section is meaningful or just boilerplate. They found that firms facing greater risk disclose more risk factors, and that the type of risk a firm describes, whether financial, legal, or otherwise, lines up with the actual risk it faces. This supports the idea that the risk section carries real information about the company.</p>
+                <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1694279" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Core paper: Loughran McDonald -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge core">Method</span>
+                <div class="p-main">
+                    <div class="p-title">When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks</div>
+                    <div class="p-meta">Loughran and McDonald (2011) &middot; The Journal of Finance</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Built the finance specific word lists that this project relies on for reading tone. They showed that general purpose sentiment dictionaries misread financial writing, because words like liability or tax are neutral in finance. Their negative and uncertainty word lists are the standard tool for measuring tone in filings, and Risk Radar uses this approach for the words half of its analysis.</p>
+                <a href="https://onlinelibrary.wiley.com/doi/10.1111/j.1540-6261.2010.01625.x" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Core paper: crash risk -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge core">Recent</span>
+                <div class="p-main">
+                    <div class="p-title">Textual Changes in 10-Ks and Future Stock Price Crash Risk</div>
+                    <div class="p-meta">Working paper &middot; American Finance Association</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Extends the Lazy Prices idea toward downside risk specifically. It reports that changes in the text of a company's 10-K have a meaningful positive effect on the chance of a stock price crash in the following year, and that investors overlooking these textual changes can have real consequences in the market.</p>
+                <a href="https://afajof.org/management/viewp.php?n=56560" target="_blank" rel="noopener">View the summary &#8599;</a>
+            </div>
         </div>
     </div>
 </section>
@@ -534,6 +738,24 @@
     }
     function go(i) { cur = (i + slides.length) % slides.length; render(); }
     function move(d) { go(cur + d); }
+
+    // Inline case study open/close
+    function openCase(id) {
+        document.querySelectorAll('.case-detail').forEach(function(c){ c.classList.remove('open'); });
+        var el = document.getElementById('case-' + id);
+        if (el) {
+            el.classList.add('open');
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+    function closeCase() {
+        document.querySelectorAll('.case-detail').forEach(function(c){ c.classList.remove('open'); });
+    }
+
+    // Academic paper expand/collapse
+    function togglePaper(head) {
+        head.parentElement.classList.toggle('open');
+    }
 </script>
 </body>
 </html>
