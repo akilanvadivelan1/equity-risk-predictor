@@ -20,6 +20,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+from html import unescape
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse, quote
 from typing import Optional, Dict, List, Tuple
@@ -99,6 +100,116 @@ def get_10k_filings(cik: str) -> List[Dict]:
     return []
 
 
+# =========================================================
+# S3 Storage (primary source for pre-extracted risk factors)
+# =========================================================
+
+RISK_S3_BUCKET = os.environ.get('RISK_S3_BUCKET', 'snp500-risk-radar-10k-data')
+RISK_S3_PREFIX = os.environ.get('RISK_S3_PREFIX', 'risk-factors')
+AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+
+# In-memory caches so we hit S3 at most once per ticker/year.
+_s3_manifest_cache: Optional[Dict] = None
+_s3_year_cache: Dict[str, List[int]] = {}
+
+
+def _get_s3_client():
+    """Return a boto3 S3 client, or None if boto3/credentials are unavailable."""
+    try:
+        import boto3
+        return boto3.client('s3', region_name=AWS_REGION)
+    except Exception as e:
+        print(f"  [S3] boto3 unavailable ({e}). S3 reads disabled.")
+        return None
+
+
+def _strip_provenance_header(body: str) -> str:
+    """Remove the provenance header the downloader writes above the risk text."""
+    marker = '-' * 60
+    if marker in body:
+        return body.split(marker, 1)[1].strip()
+    return body.strip()
+
+
+def list_s3_years_for_ticker(ticker: str) -> List[int]:
+    """
+    Return the filing years available in S3 for a ticker, newest first.
+
+    Discovers years by listing objects under each risk-factors/<year>/ prefix
+    and checking for <TICKER>.txt. Results are cached in memory.
+    """
+    ticker = ticker.upper()
+    if ticker in _s3_year_cache:
+        return _s3_year_cache[ticker]
+
+    s3 = _get_s3_client()
+    if s3 is None:
+        return []
+
+    years = []
+    try:
+        # List the year "folders" under the prefix, then check each for the ticker.
+        resp = s3.list_objects_v2(
+            Bucket=RISK_S3_BUCKET,
+            Prefix=f"{RISK_S3_PREFIX}/",
+            Delimiter='/',
+        )
+        year_prefixes = [p['Prefix'] for p in resp.get('CommonPrefixes', [])]
+        for yp in year_prefixes:
+            # yp looks like "risk-factors/2025/"
+            m = re.search(r'/(\d{4})/$', yp)
+            if not m:
+                continue
+            year = int(m.group(1))
+            key = f"{RISK_S3_PREFIX}/{year}/{ticker}.txt"
+            try:
+                s3.head_object(Bucket=RISK_S3_BUCKET, Key=key)
+                years.append(year)
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"  [S3] Could not list years for {ticker}: {e}")
+
+    years.sort(reverse=True)
+    _s3_year_cache[ticker] = years
+    return years
+
+
+def read_s3_risk_text(ticker: str, year: int) -> Optional[str]:
+    """Read the pre-extracted risk section for a ticker/year from S3."""
+    if not ticker or not year:
+        return None
+    s3 = _get_s3_client()
+    if s3 is None:
+        return None
+    key = f"{RISK_S3_PREFIX}/{int(year)}/{ticker.upper()}.txt"
+    try:
+        obj = s3.get_object(Bucket=RISK_S3_BUCKET, Key=key)
+        body = obj['Body'].read().decode('utf-8', errors='ignore')
+        text = _strip_provenance_header(body)
+        print(f"  [S3] Loaded {ticker} {year} from s3://{RISK_S3_BUCKET}/{key} ({len(text):,} chars)")
+        return text
+    except Exception:
+        return None   # not in S3, caller falls back to live SEC
+
+
+def get_company_name_from_s3(ticker: str, year: int) -> str:
+    """Read the COMPANY field from a stored file's provenance header, if present."""
+    s3 = _get_s3_client()
+    if s3 is None:
+        return ticker.upper()
+    key = f"{RISK_S3_PREFIX}/{int(year)}/{ticker.upper()}.txt"
+    try:
+        obj = s3.get_object(Bucket=RISK_S3_BUCKET, Key=key)
+        head = obj['Body'].read(400).decode('utf-8', errors='ignore')
+        m = re.search(r'COMPANY:\s*(.+)', head)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    return ticker.upper()
+
+
 def _check_database(ticker: str, year: int) -> Optional[str]:
     """Check if a filing is already in the PostgreSQL database."""
     db_url = os.environ.get('DATABASE_URL')
@@ -136,8 +247,15 @@ def fetch_filing_text(filing: Dict, ticker: str = '') -> str:
     if cache_key in _filing_cache:
         return _filing_cache[cache_key]
 
-    # ─── Check database first (instant if pre-downloaded) ───
     year = filing.get('year', 0)
+
+    # ─── Check S3 first (primary source, pre-extracted risk factors) ───
+    s3_text = read_s3_risk_text(ticker, year)
+    if s3_text and len(s3_text) > 500:
+        _filing_cache[cache_key] = s3_text
+        return s3_text
+
+    # ─── Then the PostgreSQL database, if configured ───
     db_text = _check_database(ticker, year)
     if db_text:
         _filing_cache[cache_key] = db_text
@@ -286,118 +404,61 @@ def extract_item_1a(html: str) -> str:
     - Filings with table of contents (skips TOC entries)
     - Filings with various formatting styles (bold, caps, spans, divs)
     """
+    # Strategy: convert the HTML to clean plain text FIRST, then locate the
+    # section in the clean text. This is far more reliable for inline XBRL
+    # (iXBRL) filings (Amazon, Apple, etc.), where "Item 1A" and "Risk Factors"
+    # are separated by many nested tags in the raw HTML. Validated on Amazon's
+    # 2025 10-K (was extracting 116 chars, now extracts the full section).
     text = html
+    text = re.sub(r'<!--.*?-->', ' ', text, flags=re.DOTALL)
+    text = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    # Turn block-level boundaries into spaces so words do not run together
+    text = re.sub(r'<(br|/p|/div|/tr|/td|/th|/li|/h[1-6])[^>]*>', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)          # drop all remaining tags
+    text = unescape(text)                         # decode &amp; &#160; etc.
+    text = text.replace('\u00a0', ' ')            # non breaking space -> space
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\s{2,}', ' ', text)
 
-    # ─── Strategy 1: Find ALL occurrences of Item 1A, skip TOC entries ───
-    # The trick: Table of Contents entries are SHORT (just a link/reference)
-    # The ACTUAL section header is followed by substantial content
-
-    # Broader set of start patterns to catch more formatting styles
-    start_patterns = [
-        # Standard patterns
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s*1A[\.\s\u2014\u2013\-:]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)', re.IGNORECASE),
-        re.compile(r'(?:Item|ITEM)\s+1A[\.\s\u2014\u2013\-:]+\s*Risk\s*Factor', re.IGNORECASE),
-        re.compile(r'<b[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        re.compile(r'<span[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        re.compile(r'font-weight:\s*(?:bold|700)[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        # XBRL-tagged
-        re.compile(r'<ix:[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        # Just "ITEM 1A" in caps (common in older filings)
-        re.compile(r'ITEM\s+1A\.?\s+RISK\s+FACTORS', re.IGNORECASE),
-    ]
-
-    # End patterns (Item 1B or Item 2)
-    end_patterns = [
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s*1B[\.\s\u2014\u2013\-:]*\s*(?:Unresolved|UNRESOLVED)', re.IGNORECASE),
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s+1B[\.\s\u2014\u2013\-:]', re.IGNORECASE),
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s+2[\.\s\u2014\u2013\-:]+\s*(?:Propert|PROPERT)', re.IGNORECASE),
-        re.compile(r'(?:Item|ITEM)\s+2[\.\s\u2014\u2013\-:]+\s*Propert', re.IGNORECASE),
-        re.compile(r'ITEM\s+1B\.?\s', re.IGNORECASE),
-        re.compile(r'ITEM\s+2\.?\s+PROPERTIES', re.IGNORECASE),
-    ]
-
-    # Find ALL start matches
-    all_starts = []
-    for pattern in start_patterns:
-        for match in pattern.finditer(text):
-            all_starts.append(match.start())
-
-    if not all_starts:
-        # Last resort: very broad search
-        broad = re.compile(r'Item\s*1A', re.IGNORECASE)
-        for match in broad.finditer(text):
-            all_starts.append(match.start())
-
-    if not all_starts:
+    # Start headings: "Item 1A" then (allowing punctuation/space) "Risk Factors"
+    start_re = re.compile(r'Item\s*1A[\.\s\u2013\u2014\-:]*\s*Risk\s+Factors', re.IGNORECASE)
+    starts = [m.start() for m in start_re.finditer(text)]
+    if not starts:
+        starts = [m.start() for m in re.finditer(r'Item\s*1A\b', text, re.IGNORECASE)]
+    if not starts:
         return ""
 
-    # Sort and deduplicate (keep unique positions that are >500 chars apart)
-    all_starts.sort()
-    unique_starts = [all_starts[0]]
-    for s in all_starts[1:]:
-        if s - unique_starts[-1] > 500:
-            unique_starts.append(s)
+    # End headings: Item 1B (Unresolved Staff Comments) or Item 2 (Properties)
+    end_re = re.compile(r'Item\s*1B\b|Item\s*2[\.\s\u2013\u2014\-:]+\s*Propert', re.IGNORECASE)
 
-    # Strategy: The REAL Item 1A content section is the one followed by the most text
-    # before Item 1B/2. TOC entries are followed by very little before the next item.
-    best_start = None
-    best_length = 0
-
-    for start_pos in unique_starts:
-        # Find end after this start
-        end_pos = len(text)
-        for pattern in end_patterns:
-            match = pattern.search(text, start_pos + 200)
-            if match:
-                end_pos = min(end_pos, match.start())
-                break
-
-        section_length = end_pos - start_pos
-
-        # Skip if too short (likely a TOC entry or heading reference)
-        if section_length < 2000:
-            continue
-
-        # The longest section is most likely the actual content
-        if section_length > best_length:
-            best_length = section_length
-            best_start = start_pos
-
+    # Pick the longest Item 1A -> end span (the real section, not a TOC entry)
+    best_start, best_end, best_len = None, None, 0
+    for s in starts:
+        m = end_re.search(text, s + 50)
+        end = m.start() if m else len(text)
+        if end - s > best_len:
+            best_len = end - s
+            best_start, best_end = s, end
     if best_start is None:
-        # Fallback: just use the last occurrence (usually the content, not TOC)
-        best_start = unique_starts[-1]
+        return ""
 
-    # Find end from best start
-    end_pos = len(text)
-    for pattern in end_patterns:
-        match = pattern.search(text, best_start + 200)
-        if match:
-            candidate = match.start()
-            if candidate < end_pos:
-                end_pos = candidate
+    # If the chosen span begins at a TOC entry, a later real heading usually
+    # appears inside it. Jump to the last such heading before the end.
+    inner = [m.start() for m in start_re.finditer(text, best_start + 20, best_end)]
+    if inner:
+        best_start = inner[-1]
 
-    # Extract the section
-    section_html = text[best_start:end_pos]
-
-    # Clean HTML
-    cleaned = clean_text_preserve_structure(section_html)
-
-    # Remove any CSS/style artifacts that leak through at the beginning
-    cleaned = re.sub(r'^[^A-Za-z]*(?:font-[^"]*"?>?\s*)?', '', cleaned)
-
-    # Remove the "Item 1A. Risk Factors" header itself (may appear at the start)
-    cleaned = re.sub(r'^\s*(?:Item|ITEM)\s*1A[\.\s\u2014\u2013\-:]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)?\s*',
-                     '', cleaned, count=1)
-
-    # Remove any remaining page numbers or form references at the top
-    cleaned = re.sub(r'^\s*\d+\s*\n', '', cleaned)
-    cleaned = re.sub(r'^\s*(?:Table of Contents|INDEX)\s*\n', '', cleaned, flags=re.IGNORECASE)
+    span = text[best_start:best_end].strip()
+    # Remove the leading "Item 1A. Risk Factors" heading itself
+    span = re.sub(r'^Item\s*1A[\.\s\u2013\u2014\-:]*\s*Risk\s+Factors\s*',
+                  '', span, count=1, flags=re.IGNORECASE)
+    span = span.strip()
 
     # Limit to reasonable size (some filings are enormous)
-    if len(cleaned) > 150000:
-        cleaned = cleaned[:150000]
+    if len(span) > 200000:
+        span = span[:200000]
 
-    return cleaned.strip()
+    return span.strip()
 
 
 def get_available_years(ticker: str) -> Dict:
@@ -1066,99 +1127,36 @@ def generate_risk_explanation(risk_score, classification) -> str:
 # HTML Templates
 # =========================================================
 
-HOME_PAGE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ERPSA - Equity Risk Predictor</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
-        .nav { background: #111827; border-bottom: 1px solid #1f2937; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; }
-        .nav h1 { font-size: 20px; color: #60a5fa; }
-        .nav a { color: #9ca3af; text-decoration: none; margin-left: 24px; font-size: 14px; }
-        .nav a:hover { color: #60a5fa; }
-        .hero { text-align: center; padding: 80px 40px 60px; max-width: 900px; margin: 0 auto; }
-        .hero h2 { font-size: 42px; font-weight: 700; margin-bottom: 20px; line-height: 1.2; }
-        .hero h2 span { color: #60a5fa; }
-        .hero p { font-size: 18px; color: #9ca3af; line-height: 1.7; margin-bottom: 30px; }
-        .hero .cta { display: inline-block; padding: 14px 36px; background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; transition: all 0.2s; }
-        .hero .cta:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(59,130,246,0.3); }
-        .how-it-works { max-width: 1000px; margin: 0 auto; padding: 60px 40px; }
-        .how-it-works h3 { text-align: center; font-size: 28px; margin-bottom: 40px; color: #f1f5f9; }
-        .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-        .step { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; text-align: center; }
-        .step .num { width: 40px; height: 40px; background: #1e3a5f; color: #60a5fa; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-weight: 700; }
-        .step h4 { color: #f1f5f9; margin-bottom: 10px; font-size: 16px; }
-        .step p { color: #9ca3af; font-size: 14px; line-height: 1.6; }
-        .research { max-width: 800px; margin: 0 auto; padding: 40px; }
-        .research .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; margin-bottom: 20px; }
-        .research .card h4 { color: #60a5fa; margin-bottom: 8px; }
-        .research .card p { color: #9ca3af; font-size: 14px; line-height: 1.6; }
-        .research .card .stat { font-size: 32px; font-weight: 700; color: #f59e0b; }
-        .footer { text-align: center; padding: 40px; color: #4b5563; font-size: 12px; border-top: 1px solid #1f2937; margin-top: 40px; }
-        @media (max-width: 768px) { .steps { grid-template-columns: 1fr; } .hero h2 { font-size: 28px; } }
-    </style>
-</head>
-<body>
-    <div class="nav">
-        <h1>ERPSA</h1>
-        <div>
-            <a href="/">Home</a>
-            <a href="/analyze">Analyze</a>
-        </div>
-    </div>
+def _load_home_page() -> str:
+    """
+    Load the S&P 500 Risk Radar landing page from mockup.html and wire its
+    call-to-action and nav links to the real /analyze route. Falls back to a
+    minimal page if the file is missing.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mockup.html')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            html = f.read()
+    except Exception as e:
+        print(f"  [HOME] Could not load mockup.html ({e}). Using fallback.")
+        return (
+            "<!DOCTYPE html><html><head><title>S&amp;P 500 Risk Radar</title></head>"
+            "<body style='font-family:sans-serif;text-align:center;padding:80px'>"
+            "<h1>S&amp;P 500 Risk Radar</h1>"
+            "<p><a href='/analyze'>Start Analysis</a></p></body></html>"
+        )
 
-    <div class="hero">
-        <h2>Predict Corporate Risk<br><span>Before the Numbers Show It</span></h2>
-        <p>
-            ERPSA reads what companies are legally forced to tell you in their SEC filings,
-            detects when their language shifts from routine to alarming, and scores the probability
-            of bad things happening — months before Wall Street notices.
-        </p>
-        <a href="/analyze" class="cta">Start Analysis</a>
-    </div>
+    # Point the hero "Start Analysis" button and nav "Analyze" link at /analyze.
+    html = html.replace('<a href="#" class="cta">Start Analysis</a>',
+                        '<a href="/analyze" class="cta">Start Analysis</a>')
+    html = html.replace('<a href="#">Analyze</a>', '<a href="/analyze">Analyze</a>')
+    # Drop the "design mockup" wording now that this is the live page.
+    html = html.replace('S&amp;P 500 Risk Radar, design mockup v0.2',
+                        'S&amp;P 500 Risk Radar')
+    return html
 
-    <div class="how-it-works">
-        <h3>How It Works</h3>
-        <div class="steps">
-            <div class="step">
-                <div class="num">1</div>
-                <h4>Enter a Ticker</h4>
-                <p>Type any publicly-traded company's stock ticker (like AAPL, TSLA, TGT). We pull their actual 10-K filings directly from the SEC.</p>
-            </div>
-            <div class="step">
-                <div class="num">2</div>
-                <h4>Pick Two Years</h4>
-                <p>Choose which years to compare. The system extracts the "Risk Factors" section from each filing and compares them word-by-word.</p>
-            </div>
-            <div class="step">
-                <div class="num">3</div>
-                <h4>See the Signals</h4>
-                <p>Get a scored breakdown of every risk: what changed, how severe the language is, and what it means in plain English. High scores = danger ahead.</p>
-            </div>
-        </div>
-    </div>
 
-    <div class="research">
-        <div class="card">
-            <div class="stat">22%/year</div>
-            <h4>Academic Backing: "Lazy Prices" (Harvard, 2020)</h4>
-            <p>A portfolio strategy that simply buys stocks of companies with unchanged filings and sells those with changed filings earned 22% per year in abnormal returns. The research proves that textual changes predict future problems — but almost nobody reads these documents.</p>
-        </div>
-        <div class="card">
-            <h4>Why This Works</h4>
-            <p>Companies are legally required to disclose risks. They KNOW about problems before the numbers show it. But they bury the warnings in 200-page documents using dense legal language. A computer that reads everything, every year, and measures what changed — has an enormous edge over humans who just look at stock prices.</p>
-        </div>
-    </div>
-
-    <div class="footer">
-        ERPSA v1.0 | Built on: Cohen et al. "Lazy Prices" (2020) + Loughran & McDonald Financial Sentiment (2011)<br>
-        Data from SEC EDGAR (free, public) | Not investment advice
-    </div>
-</body>
-</html>"""
+HOME_PAGE = _load_home_page()
 
 
 
@@ -1692,16 +1690,53 @@ class ERPSAHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode('utf-8'))
 
     def _handle_lookup(self, parsed):
-        """Handle ticker lookup — returns available years."""
+        """
+        Ticker-only lookup. Given just a ticker, discover the two most recent
+        filing years available in S3 and return them for display. Falls back to
+        live SEC EDGAR only if the ticker is not present in S3 at all.
+        """
         params = parse_qs(parsed.query)
-        ticker = params.get('ticker', [''])[0].strip()
+        ticker = params.get('ticker', [''])[0].strip().upper()
         if not ticker:
             self._serve_json({'error': 'No ticker provided'})
             return
 
-        print(f"  [LOOKUP] Looking up ticker: {ticker}")
-        result = get_available_years(ticker)
-        self._serve_json(result)
+        print(f"  [LOOKUP] Ticker: {ticker}")
+
+        # Primary path: what do we have in S3?
+        s3_years = list_s3_years_for_ticker(ticker)
+        if s3_years:
+            latest = s3_years[0]
+            prior = s3_years[1] if len(s3_years) > 1 else None
+            company = get_company_name_from_s3(ticker, latest)
+            result = {
+                'ticker': ticker,
+                'company': company,
+                'source': 's3',
+                'available_years': s3_years,
+                'latest_year': latest,
+                'prior_year': prior,
+                'can_compare': prior is not None,
+            }
+            if prior is None:
+                result['message'] = (
+                    f"We only have one year of filings for {ticker} so far "
+                    f"({latest}). A year over year comparison needs two."
+                )
+            self._serve_json(result)
+            return
+
+        # Fallback: not in S3 yet, tell the user (avoid slow live path by default).
+        self._serve_json({
+            'ticker': ticker,
+            'company': ticker,
+            'source': 'none',
+            'available_years': [],
+            'latest_year': None,
+            'prior_year': None,
+            'can_compare': False,
+            'message': f"We do not have filings for {ticker} yet.",
+        })
 
     def _handle_analyze(self):
         """Handle full analysis request."""
