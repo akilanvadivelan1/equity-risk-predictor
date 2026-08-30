@@ -20,6 +20,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+from html import unescape
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse, quote
 from typing import Optional, Dict, List, Tuple
@@ -99,6 +100,116 @@ def get_10k_filings(cik: str) -> List[Dict]:
     return []
 
 
+# =========================================================
+# S3 Storage (primary source for pre-extracted risk factors)
+# =========================================================
+
+RISK_S3_BUCKET = os.environ.get('RISK_S3_BUCKET', 'snp500-risk-radar-10k-data')
+RISK_S3_PREFIX = os.environ.get('RISK_S3_PREFIX', 'risk-factors')
+AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+
+# In-memory caches so we hit S3 at most once per ticker/year.
+_s3_manifest_cache: Optional[Dict] = None
+_s3_year_cache: Dict[str, List[int]] = {}
+
+
+def _get_s3_client():
+    """Return a boto3 S3 client, or None if boto3/credentials are unavailable."""
+    try:
+        import boto3
+        return boto3.client('s3', region_name=AWS_REGION)
+    except Exception as e:
+        print(f"  [S3] boto3 unavailable ({e}). S3 reads disabled.")
+        return None
+
+
+def _strip_provenance_header(body: str) -> str:
+    """Remove the provenance header the downloader writes above the risk text."""
+    marker = '-' * 60
+    if marker in body:
+        return body.split(marker, 1)[1].strip()
+    return body.strip()
+
+
+def list_s3_years_for_ticker(ticker: str) -> List[int]:
+    """
+    Return the filing years available in S3 for a ticker, newest first.
+
+    Discovers years by listing objects under each risk-factors/<year>/ prefix
+    and checking for <TICKER>.txt. Results are cached in memory.
+    """
+    ticker = ticker.upper()
+    if ticker in _s3_year_cache:
+        return _s3_year_cache[ticker]
+
+    s3 = _get_s3_client()
+    if s3 is None:
+        return []
+
+    years = []
+    try:
+        # List the year "folders" under the prefix, then check each for the ticker.
+        resp = s3.list_objects_v2(
+            Bucket=RISK_S3_BUCKET,
+            Prefix=f"{RISK_S3_PREFIX}/",
+            Delimiter='/',
+        )
+        year_prefixes = [p['Prefix'] for p in resp.get('CommonPrefixes', [])]
+        for yp in year_prefixes:
+            # yp looks like "risk-factors/2025/"
+            m = re.search(r'/(\d{4})/$', yp)
+            if not m:
+                continue
+            year = int(m.group(1))
+            key = f"{RISK_S3_PREFIX}/{year}/{ticker}.txt"
+            try:
+                s3.head_object(Bucket=RISK_S3_BUCKET, Key=key)
+                years.append(year)
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"  [S3] Could not list years for {ticker}: {e}")
+
+    years.sort(reverse=True)
+    _s3_year_cache[ticker] = years
+    return years
+
+
+def read_s3_risk_text(ticker: str, year: int) -> Optional[str]:
+    """Read the pre-extracted risk section for a ticker/year from S3."""
+    if not ticker or not year:
+        return None
+    s3 = _get_s3_client()
+    if s3 is None:
+        return None
+    key = f"{RISK_S3_PREFIX}/{int(year)}/{ticker.upper()}.txt"
+    try:
+        obj = s3.get_object(Bucket=RISK_S3_BUCKET, Key=key)
+        body = obj['Body'].read().decode('utf-8', errors='ignore')
+        text = _strip_provenance_header(body)
+        print(f"  [S3] Loaded {ticker} {year} from s3://{RISK_S3_BUCKET}/{key} ({len(text):,} chars)")
+        return text
+    except Exception:
+        return None   # not in S3, caller falls back to live SEC
+
+
+def get_company_name_from_s3(ticker: str, year: int) -> str:
+    """Read the COMPANY field from a stored file's provenance header, if present."""
+    s3 = _get_s3_client()
+    if s3 is None:
+        return ticker.upper()
+    key = f"{RISK_S3_PREFIX}/{int(year)}/{ticker.upper()}.txt"
+    try:
+        obj = s3.get_object(Bucket=RISK_S3_BUCKET, Key=key)
+        head = obj['Body'].read(400).decode('utf-8', errors='ignore')
+        m = re.search(r'COMPANY:\s*(.+)', head)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    return ticker.upper()
+
+
 def _check_database(ticker: str, year: int) -> Optional[str]:
     """Check if a filing is already in the PostgreSQL database."""
     db_url = os.environ.get('DATABASE_URL')
@@ -136,8 +247,15 @@ def fetch_filing_text(filing: Dict, ticker: str = '') -> str:
     if cache_key in _filing_cache:
         return _filing_cache[cache_key]
 
-    # ─── Check database first (instant if pre-downloaded) ───
     year = filing.get('year', 0)
+
+    # ─── Check S3 first (primary source, pre-extracted risk factors) ───
+    s3_text = read_s3_risk_text(ticker, year)
+    if s3_text and len(s3_text) > 500:
+        _filing_cache[cache_key] = s3_text
+        return s3_text
+
+    # ─── Then the PostgreSQL database, if configured ───
     db_text = _check_database(ticker, year)
     if db_text:
         _filing_cache[cache_key] = db_text
@@ -286,118 +404,61 @@ def extract_item_1a(html: str) -> str:
     - Filings with table of contents (skips TOC entries)
     - Filings with various formatting styles (bold, caps, spans, divs)
     """
+    # Strategy: convert the HTML to clean plain text FIRST, then locate the
+    # section in the clean text. This is far more reliable for inline XBRL
+    # (iXBRL) filings (Amazon, Apple, etc.), where "Item 1A" and "Risk Factors"
+    # are separated by many nested tags in the raw HTML. Validated on Amazon's
+    # 2025 10-K (was extracting 116 chars, now extracts the full section).
     text = html
+    text = re.sub(r'<!--.*?-->', ' ', text, flags=re.DOTALL)
+    text = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    # Turn block-level boundaries into spaces so words do not run together
+    text = re.sub(r'<(br|/p|/div|/tr|/td|/th|/li|/h[1-6])[^>]*>', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)          # drop all remaining tags
+    text = unescape(text)                         # decode &amp; &#160; etc.
+    text = text.replace('\u00a0', ' ')            # non breaking space -> space
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\s{2,}', ' ', text)
 
-    # ─── Strategy 1: Find ALL occurrences of Item 1A, skip TOC entries ───
-    # The trick: Table of Contents entries are SHORT (just a link/reference)
-    # The ACTUAL section header is followed by substantial content
-
-    # Broader set of start patterns to catch more formatting styles
-    start_patterns = [
-        # Standard patterns
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s*1A[\.\s\u2014\u2013\-:]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)', re.IGNORECASE),
-        re.compile(r'(?:Item|ITEM)\s+1A[\.\s\u2014\u2013\-:]+\s*Risk\s*Factor', re.IGNORECASE),
-        re.compile(r'<b[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        re.compile(r'<span[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        re.compile(r'font-weight:\s*(?:bold|700)[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        # XBRL-tagged
-        re.compile(r'<ix:[^>]*>\s*Item\s*1A', re.IGNORECASE),
-        # Just "ITEM 1A" in caps (common in older filings)
-        re.compile(r'ITEM\s+1A\.?\s+RISK\s+FACTORS', re.IGNORECASE),
-    ]
-
-    # End patterns (Item 1B or Item 2)
-    end_patterns = [
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s*1B[\.\s\u2014\u2013\-:]*\s*(?:Unresolved|UNRESOLVED)', re.IGNORECASE),
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s+1B[\.\s\u2014\u2013\-:]', re.IGNORECASE),
-        re.compile(r'(?:>|"|;|\n)\s*(?:Item|ITEM)\s+2[\.\s\u2014\u2013\-:]+\s*(?:Propert|PROPERT)', re.IGNORECASE),
-        re.compile(r'(?:Item|ITEM)\s+2[\.\s\u2014\u2013\-:]+\s*Propert', re.IGNORECASE),
-        re.compile(r'ITEM\s+1B\.?\s', re.IGNORECASE),
-        re.compile(r'ITEM\s+2\.?\s+PROPERTIES', re.IGNORECASE),
-    ]
-
-    # Find ALL start matches
-    all_starts = []
-    for pattern in start_patterns:
-        for match in pattern.finditer(text):
-            all_starts.append(match.start())
-
-    if not all_starts:
-        # Last resort: very broad search
-        broad = re.compile(r'Item\s*1A', re.IGNORECASE)
-        for match in broad.finditer(text):
-            all_starts.append(match.start())
-
-    if not all_starts:
+    # Start headings: "Item 1A" then (allowing punctuation/space) "Risk Factors"
+    start_re = re.compile(r'Item\s*1A[\.\s\u2013\u2014\-:]*\s*Risk\s+Factors', re.IGNORECASE)
+    starts = [m.start() for m in start_re.finditer(text)]
+    if not starts:
+        starts = [m.start() for m in re.finditer(r'Item\s*1A\b', text, re.IGNORECASE)]
+    if not starts:
         return ""
 
-    # Sort and deduplicate (keep unique positions that are >500 chars apart)
-    all_starts.sort()
-    unique_starts = [all_starts[0]]
-    for s in all_starts[1:]:
-        if s - unique_starts[-1] > 500:
-            unique_starts.append(s)
+    # End headings: Item 1B (Unresolved Staff Comments) or Item 2 (Properties)
+    end_re = re.compile(r'Item\s*1B\b|Item\s*2[\.\s\u2013\u2014\-:]+\s*Propert', re.IGNORECASE)
 
-    # Strategy: The REAL Item 1A content section is the one followed by the most text
-    # before Item 1B/2. TOC entries are followed by very little before the next item.
-    best_start = None
-    best_length = 0
-
-    for start_pos in unique_starts:
-        # Find end after this start
-        end_pos = len(text)
-        for pattern in end_patterns:
-            match = pattern.search(text, start_pos + 200)
-            if match:
-                end_pos = min(end_pos, match.start())
-                break
-
-        section_length = end_pos - start_pos
-
-        # Skip if too short (likely a TOC entry or heading reference)
-        if section_length < 2000:
-            continue
-
-        # The longest section is most likely the actual content
-        if section_length > best_length:
-            best_length = section_length
-            best_start = start_pos
-
+    # Pick the longest Item 1A -> end span (the real section, not a TOC entry)
+    best_start, best_end, best_len = None, None, 0
+    for s in starts:
+        m = end_re.search(text, s + 50)
+        end = m.start() if m else len(text)
+        if end - s > best_len:
+            best_len = end - s
+            best_start, best_end = s, end
     if best_start is None:
-        # Fallback: just use the last occurrence (usually the content, not TOC)
-        best_start = unique_starts[-1]
+        return ""
 
-    # Find end from best start
-    end_pos = len(text)
-    for pattern in end_patterns:
-        match = pattern.search(text, best_start + 200)
-        if match:
-            candidate = match.start()
-            if candidate < end_pos:
-                end_pos = candidate
+    # If the chosen span begins at a TOC entry, a later real heading usually
+    # appears inside it. Jump to the last such heading before the end.
+    inner = [m.start() for m in start_re.finditer(text, best_start + 20, best_end)]
+    if inner:
+        best_start = inner[-1]
 
-    # Extract the section
-    section_html = text[best_start:end_pos]
-
-    # Clean HTML
-    cleaned = clean_text_preserve_structure(section_html)
-
-    # Remove any CSS/style artifacts that leak through at the beginning
-    cleaned = re.sub(r'^[^A-Za-z]*(?:font-[^"]*"?>?\s*)?', '', cleaned)
-
-    # Remove the "Item 1A. Risk Factors" header itself (may appear at the start)
-    cleaned = re.sub(r'^\s*(?:Item|ITEM)\s*1A[\.\s\u2014\u2013\-:]*\s*(?:Risk\s*Factors|RISK\s*FACTORS)?\s*',
-                     '', cleaned, count=1)
-
-    # Remove any remaining page numbers or form references at the top
-    cleaned = re.sub(r'^\s*\d+\s*\n', '', cleaned)
-    cleaned = re.sub(r'^\s*(?:Table of Contents|INDEX)\s*\n', '', cleaned, flags=re.IGNORECASE)
+    span = text[best_start:best_end].strip()
+    # Remove the leading "Item 1A. Risk Factors" heading itself
+    span = re.sub(r'^Item\s*1A[\.\s\u2013\u2014\-:]*\s*Risk\s+Factors\s*',
+                  '', span, count=1, flags=re.IGNORECASE)
+    span = span.strip()
 
     # Limit to reasonable size (some filings are enormous)
-    if len(cleaned) > 150000:
-        cleaned = cleaned[:150000]
+    if len(span) > 200000:
+        span = span[:200000]
 
-    return cleaned.strip()
+    return span.strip()
 
 
 def get_available_years(ticker: str) -> Dict:
@@ -1063,587 +1124,1249 @@ def generate_risk_explanation(risk_score, classification) -> str:
 
 
 # =========================================================
+# Tone Scoring, Highlighting, and Serialization (Option A)
+# =========================================================
+
+import html as _html_escape
+from lm_dictionary import NEGATIVE_WORDS, UNCERTAINTY_WORDS
+
+# Tone labels, mild -> severe (never a positive scale; risk factors are about
+# how bad things could get, so we lead with negative + uncertainty only).
+TONE_LABELS = ["mild", "moderate", "serious", "severe"]
+
+
+def compute_tone(sentiment_detail) -> Dict:
+    """
+    Turn Loughran-McDonald negative + uncertainty densities into a 0-100 tone
+    score and a mild/moderate/serious/severe label with a plain-English caption.
+    Uses only the changed/new wording (sentiment_detail.changed_sentiment).
+    """
+    default = {'score': 0, 'label': 'mild', 'caption': 'The wording is measured, in line with typical filing language.'}
+    if not sentiment_detail or not getattr(sentiment_detail, 'changed_sentiment', None):
+        return default
+
+    s = sentiment_detail.changed_sentiment
+    neg = getattr(s, 'negative_density', 0.0)
+    unc = getattr(s, 'uncertainty_density', 0.0)
+
+    # Map densities to 0-100. Negative weighs more than uncertainty.
+    # ~0.15 negative density is very high in a 10-K, so normalize against that.
+    neg_component = min(neg / 0.15, 1.0)
+    unc_component = min(unc / 0.12, 1.0)
+    raw = 0.65 * neg_component + 0.35 * unc_component
+    score = int(round(min(max(raw, 0.0), 1.0) * 100))
+
+    # Year-over-year worsening nudges the tone up a band.
+    delta = getattr(sentiment_detail, 'sentiment_delta', None)
+    worsened = bool(delta and getattr(delta, 'tone_worsened', False))
+    if worsened:
+        score = min(score + 10, 100)
+
+    if score >= 75:
+        label = 'severe'
+    elif score >= 50:
+        label = 'serious'
+    elif score >= 25:
+        label = 'moderate'
+    else:
+        label = 'mild'
+
+    caption_map = {
+        'severe': 'This section reads as strongly negative and uncertain, well above a typical filing. It comes across as a serious warning.',
+        'serious': 'This section leans notably negative and uncertain, more cautious than typical filing language.',
+        'moderate': 'This section carries some negative and hedging language, a step up from routine wording.',
+        'mild': 'The wording is measured, close to routine filing language.',
+    }
+    caption = caption_map[label]
+    if worsened:
+        caption += ' The tone also darkened compared with last year.'
+
+    return {'score': score, 'label': label, 'caption': caption}
+
+
+_word_re = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
+
+def highlight_wording(sentences: List[str], limit: int = 6) -> List[str]:
+    """
+    Return up to `limit` sentences as HTML with negative words wrapped in a
+    red span and uncertainty words in an amber span. Input text is escaped
+    first so filing content cannot inject markup.
+    """
+    out = []
+    for sent in sentences[:limit]:
+        def repl(m):
+            w = m.group(0)
+            lw = w.lower()
+            if lw in NEGATIVE_WORDS:
+                return f'<span class="w-neg">{w}</span>'
+            if lw in UNCERTAINTY_WORDS:
+                return f'<span class="w-unc">{w}</span>'
+            return w
+        escaped = _html_escape.escape(sent)
+        # Re-run the matcher over the escaped text (word chars are unaffected by escaping).
+        highlighted = _word_re.sub(repl, escaped)
+        out.append(highlighted)
+    return out
+
+
+def serialize_risk(score_obj, classification) -> Dict:
+    """
+    Build the Option A per-risk dict for the frontend: title, status, score,
+    tone (bar + caption), a plain-English note, and the highlighted changed
+    wording for the expandable 'see the wording' detail.
+    """
+    status = score_obj.status.value
+    tone = compute_tone(getattr(score_obj, 'sentiment_detail', None))
+
+    # Collect the wording to highlight: changed sentences (MODIFIED) or key
+    # sentences (NEW). These come from the classifier.
+    sentences: List[str] = []
+    if classification is not None:
+        if getattr(classification, 'changed_sentences', None):
+            sentences = [c.sentence for c in classification.changed_sentences]
+        elif getattr(classification, 'key_sentences', None):
+            sentences = list(classification.key_sentences)
+
+    # Friendly status label for the chip.
+    status_label = {
+        'NEW': 'NEW', 'MODIFIED': 'REWRITTEN',
+        'UNCHANGED': 'UNCHANGED', 'REMOVED': 'REMOVED',
+    }.get(status, status)
+
+    return {
+        'title': score_obj.title[:140],
+        'status': status,
+        'status_label': status_label,
+        'score': int(round(score_obj.preliminary_probability)),
+        'level': score_obj.risk_level_label,
+        'tone_score': tone['score'],
+        'tone_label': tone['label'],
+        'tone_caption': tone['caption'],
+        'note': generate_risk_explanation(score_obj, classification) if classification else '',
+        'wording': highlight_wording(sentences),
+    }
+
+
+def build_headline(scoring, current_year: int, prior_year: int) -> Dict:
+    """
+    Build the top risk-signal panel: an overall mild/moderate/serious/severe
+    band and a one-line plain-English summary of what changed this year.
+    """
+    risks = scoring.risk_scores
+    new_count = sum(1 for r in risks if r.status == RiskChangeStatus.NEW)
+    modified_count = sum(1 for r in risks if r.status == RiskChangeStatus.MODIFIED)
+    unchanged_count = sum(1 for r in risks if r.status == RiskChangeStatus.UNCHANGED)
+
+    # Overall band from the average tone of changed risks, plus new-risk pressure.
+    changed = [r for r in risks if r.status in (RiskChangeStatus.NEW, RiskChangeStatus.MODIFIED)]
+    tones = [compute_tone(getattr(r, 'sentiment_detail', None))['score'] for r in changed]
+    avg_tone = int(round(sum(tones) / len(tones))) if tones else 0
+    overall = min(avg_tone + (8 if new_count >= 2 else 0), 100)
+
+    if overall >= 75:
+        band = 'severe'
+    elif overall >= 50:
+        band = 'serious'
+    elif overall >= 25:
+        band = 'moderate'
+    else:
+        band = 'mild'
+
+    def plural(n, s):
+        return f"{n} {s}" + ("" if n == 1 else "s")
+
+    parts = []
+    if new_count:
+        parts.append(plural(new_count, "new risk") + " appeared")
+    if modified_count:
+        parts.append(plural(modified_count, "risk") + " rewritten with changed wording")
+    change_phrase = ", and ".join(parts) if parts else "little changed in the risk language"
+
+    band_phrase = {
+        'severe': "grew much more cautious",
+        'serious': "grew noticeably more cautious",
+        'moderate': "shifted somewhat",
+        'mild': "stayed largely steady",
+    }[band]
+
+    summary = (
+        f"The risk language {band_phrase} this year. "
+        f"{change_phrase[0].upper() + change_phrase[1:]}. "
+        f"{unchanged_count} of the risk sections are unchanged from last year."
+    )
+
+    return {'band': band, 'score': overall, 'summary': summary,
+            'new_count': new_count, 'modified_count': modified_count,
+            'unchanged_count': unchanged_count}
+
+
+
+# =========================================================
 # HTML Templates
 # =========================================================
 
 HOME_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ERPSA - Equity Risk Predictor</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
-        .nav { background: #111827; border-bottom: 1px solid #1f2937; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; }
-        .nav h1 { font-size: 20px; color: #60a5fa; }
-        .nav a { color: #9ca3af; text-decoration: none; margin-left: 24px; font-size: 14px; }
-        .nav a:hover { color: #60a5fa; }
-        .hero { text-align: center; padding: 80px 40px 60px; max-width: 900px; margin: 0 auto; }
-        .hero h2 { font-size: 42px; font-weight: 700; margin-bottom: 20px; line-height: 1.2; }
-        .hero h2 span { color: #60a5fa; }
-        .hero p { font-size: 18px; color: #9ca3af; line-height: 1.7; margin-bottom: 30px; }
-        .hero .cta { display: inline-block; padding: 14px 36px; background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; transition: all 0.2s; }
-        .hero .cta:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(59,130,246,0.3); }
-        .how-it-works { max-width: 1000px; margin: 0 auto; padding: 60px 40px; }
-        .how-it-works h3 { text-align: center; font-size: 28px; margin-bottom: 40px; color: #f1f5f9; }
-        .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-        .step { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; text-align: center; }
-        .step .num { width: 40px; height: 40px; background: #1e3a5f; color: #60a5fa; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-weight: 700; }
-        .step h4 { color: #f1f5f9; margin-bottom: 10px; font-size: 16px; }
-        .step p { color: #9ca3af; font-size: 14px; line-height: 1.6; }
-        .research { max-width: 800px; margin: 0 auto; padding: 40px; }
-        .research .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; margin-bottom: 20px; }
-        .research .card h4 { color: #60a5fa; margin-bottom: 8px; }
-        .research .card p { color: #9ca3af; font-size: 14px; line-height: 1.6; }
-        .research .card .stat { font-size: 32px; font-weight: 700; color: #f59e0b; }
-        .footer { text-align: center; padding: 40px; color: #4b5563; font-size: 12px; border-top: 1px solid #1f2937; margin-top: 40px; }
-        @media (max-width: 768px) { .steps { grid-template-columns: 1fr; } .hero h2 { font-size: 28px; } }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S&amp;P 500 Risk Radar</title>
+<style>
+    :root {
+        --bg: #ffffff;
+        --bg-alt: #f7f9fc;
+        --navy: #0b1b34;
+        --ink: #0f172a;
+        --slate: #64748b;
+        --line: #e5e9f0;
+        --accent: #2563eb;
+        --accent-soft: #eff4ff;
+        --red: #dc2626;
+        --amber: #b45309;
+        --shadow: 0 1px 3px rgba(15,23,42,0.06), 0 8px 24px rgba(15,23,42,0.05);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+    a { color: inherit; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+
+    /* ---------- Nav ---------- */
+    .nav { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,0.85); backdrop-filter: saturate(180%) blur(12px); border-bottom: 1px solid var(--line); }
+    .nav-inner { max-width: 1120px; margin: 0 auto; padding: 14px 32px; display: flex; align-items: center; gap: 44px; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .brand .logo { width: 28px; height: 28px; }
+    .brand h1 { font-size: 17px; color: var(--ink); font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; }
+    .brand h1 span { color: var(--accent); }
+    .menu { display: flex; align-items: center; gap: 30px; }
+    .menu a { color: var(--slate); text-decoration: none; font-size: 14.5px; font-weight: 500; transition: color 0.15s; }
+    .menu a:hover { color: var(--ink); }
+    .menu a .ext { font-size: 11px; opacity: 0.6; }
+    .nav-actions { margin-left: auto; }
+    .signin-btn { position: relative; padding: 8px 18px; border: 1px solid var(--line); border-radius: 8px; background: #f1f5f9; color: #94a3b8; font-size: 14px; font-weight: 600; cursor: not-allowed; font-family: inherit; }
+    .signin-btn::after { content: "Coming soon"; position: absolute; top: 128%; right: 0; background: var(--navy); color: #e2e8f0; font-size: 11px; font-weight: 500; padding: 6px 10px; border-radius: 6px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+    .signin-btn:hover::after { opacity: 1; }
+
+    /* ---------- Hero ---------- */
+    .hero { text-align: center; padding: 84px 32px 48px; max-width: 860px; margin: 0 auto; }
+    .eyebrow { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: 0.4px; color: var(--accent); background: var(--accent-soft); padding: 6px 14px; border-radius: 999px; margin-bottom: 24px; }
+    .hero h2 { font-size: 52px; font-weight: 800; line-height: 1.08; letter-spacing: -1.2px; color: var(--ink); margin-bottom: 22px; }
+    .hero h2 span { color: var(--accent); }
+    .hero p { font-size: 19px; color: var(--slate); line-height: 1.65; max-width: 680px; margin: 0 auto 32px; }
+    .hero p b { color: var(--ink); font-weight: 600; }
+    .cta { display: inline-block; padding: 14px 34px; background: var(--accent); color: #fff; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 16px; transition: all 0.15s; box-shadow: 0 6px 18px rgba(37,99,235,0.25); }
+    .cta:hover { transform: translateY(-1px); background: #1d4fd7; }
+    .cta.ghost { background: transparent; color: var(--accent); box-shadow: none; border: 1px solid var(--line); margin-left: 10px; }
+    .cta.ghost:hover { background: var(--accent-soft); }
+
+    /* ---------- Section scaffolding ---------- */
+    section { padding: 72px 0; }
+    .section-alt { background: var(--bg-alt); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .section-head { text-align: center; max-width: 640px; margin: 0 auto 48px; }
+    .section-head .kicker { font-size: 13px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+    .section-head h3 { font-size: 34px; font-weight: 800; letter-spacing: -0.6px; color: var(--ink); margin-bottom: 14px; }
+    .section-head p { font-size: 17px; color: var(--slate); line-height: 1.6; }
+
+    /* ---------- Carousel ---------- */
+    .carousel { max-width: 1000px; margin: 0 auto; }
+    .slide { display: none; grid-template-columns: 1fr 340px; gap: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
+    .slide.active { display: grid; }
+    .slide-chart { padding: 26px 22px 18px; border-right: 1px solid var(--line); }
+    .slide-chart .co { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+    .slide-chart .co .tk { font-size: 18px; font-weight: 800; color: var(--ink); }
+    .slide-chart .co .nm { font-size: 14px; color: var(--slate); }
+    .slide-chart .period { font-size: 12.5px; color: var(--slate); margin-bottom: 12px; }
+    .slide-chart svg { width: 100%; height: auto; display: block; }
+    .slide-info { padding: 28px 26px; background: var(--bg); }
+    .info-block { margin-bottom: 22px; }
+    .info-block:last-child { margin-bottom: 0; }
+    .info-block .lbl { font-size: 11.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 6px; }
+    .info-block.risk .lbl { color: var(--amber); }
+    .info-block.event .lbl { color: var(--accent); }
+    .info-block.stock .lbl { color: var(--red); }
+    .info-block p { font-size: 14px; color: #334155; line-height: 1.55; }
+    .info-block p b { color: var(--ink); }
+
+    .carousel-controls { display: flex; align-items: center; justify-content: center; gap: 20px; margin-top: 24px; }
+    .dots { display: flex; gap: 10px; }
+    .dot { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: #fff; color: var(--slate); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .dot:hover { border-color: var(--accent); color: var(--accent); }
+    .dot.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .arrow-btn { width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 16px; cursor: pointer; transition: all 0.15s; }
+    .arrow-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ---------- Two lenses ---------- */
+    .lens-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 940px; margin: 0 auto; }
+    .lens { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 30px; box-shadow: var(--shadow); }
+    .lens .tag { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 10px; }
+    .lens.numbers .tag { color: var(--amber); }
+    .lens.words .tag { color: var(--accent); }
+    .lens h4 { font-size: 20px; color: var(--ink); margin-bottom: 8px; }
+    .lens .desc { color: var(--slate); font-size: 14.5px; line-height: 1.6; margin-bottom: 16px; }
+    .lens ul { list-style: none; }
+    .lens li { color: #334155; font-size: 14px; padding: 6px 0 6px 22px; position: relative; }
+    .lens li::before { content: ""; position: absolute; left: 2px; top: 13px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+    /* ---------- How it works ---------- */
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 940px; margin: 0 auto; }
+    .step { text-align: center; padding: 12px; }
+    .step .num { width: 46px; height: 46px; background: var(--accent-soft); color: var(--accent); border-radius: 12px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-weight: 800; font-size: 18px; }
+    .step h4 { color: var(--ink); margin-bottom: 8px; font-size: 17px; }
+    .step p { color: var(--slate); font-size: 14.5px; line-height: 1.6; }
+
+    /* ---------- Learning ---------- */
+    .learn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; max-width: 1000px; margin: 0 auto; }
+    .learn-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); transition: transform 0.15s, box-shadow 0.15s; text-decoration: none; display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer; padding: 0; }
+    .learn-card:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(15,23,42,0.1); }
+    .learn-card .thumb { height: 8px; }
+    .learn-card .thumb.t1 { background: linear-gradient(90deg, #f59e0b, #dc2626); }
+    .learn-card .thumb.t2 { background: linear-gradient(90deg, #3b82f6, #dc2626); }
+    .learn-card .thumb.t3 { background: linear-gradient(90deg, #6366f1, #dc2626); }
+    .learn-card .body { padding: 22px; }
+    .learn-card .meta { font-size: 12px; color: var(--slate); margin-bottom: 10px; }
+    .learn-card h4 { font-size: 17px; color: var(--ink); line-height: 1.35; margin-bottom: 10px; }
+    .learn-card p { font-size: 14px; color: var(--slate); line-height: 1.55; }
+    .learn-more { text-align: center; margin-top: 36px; }
+    .learn-more a { color: var(--accent); font-weight: 600; text-decoration: none; font-size: 15px; }
+    .learn-more a:hover { text-decoration: underline; }
+
+    /* ---------- About ---------- */
+    .about { display: grid; grid-template-columns: 132px 1fr; gap: 32px; align-items: start; max-width: 820px; margin: 0 auto; }
+    .about .avatar { width: 132px; height: 132px; border-radius: 20px; box-shadow: var(--shadow); }
+    .about h3 { font-size: 28px; color: var(--ink); margin-bottom: 6px; letter-spacing: -0.4px; }
+    .about .role { font-size: 14px; color: var(--accent); font-weight: 600; margin-bottom: 16px; }
+    .about p { font-size: 15.5px; color: #334155; line-height: 1.7; margin-bottom: 14px; }
+    .about .why { border-left: 3px solid var(--accent); padding-left: 16px; color: #1e293b; font-style: italic; }
+    .about .sub-link { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 600; text-decoration: none; font-size: 15px; }
+    .about .sub-link:hover { text-decoration: underline; }
+
+    /* ---------- Research strip ---------- */
+    .research { background: var(--navy); color: #fff; }
+    .research .wrap { display: grid; grid-template-columns: 220px 1fr; gap: 40px; align-items: center; }
+    .research .big { font-size: 60px; font-weight: 800; color: #60a5fa; letter-spacing: -2px; line-height: 1; }
+    .research .big span { display: block; font-size: 14px; color: #94a3b8; font-weight: 500; margin-top: 8px; letter-spacing: 0; }
+    .research h3 { font-size: 24px; margin-bottom: 12px; }
+    .research p { color: #cbd5e1; font-size: 15px; line-height: 1.65; }
+
+    /* ---------- Case study detail (inline expandable) ---------- */
+    .case-detail { display: none; max-width: 820px; margin: 32px auto 0; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+    .case-detail.open { display: block; }
+    .case-detail .cd-head { padding: 24px 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .case-detail .cd-head .cd-title { font-size: 20px; font-weight: 800; color: var(--ink); }
+    .case-detail .cd-head .cd-tag { font-size: 12px; color: var(--slate); margin-top: 4px; }
+    .case-detail .cd-close { border: 1px solid var(--line); background: #fff; color: var(--slate); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; }
+    .case-detail .cd-close:hover { border-color: var(--accent); color: var(--accent); }
+    .case-detail .cd-body { padding: 26px 28px; }
+    .case-detail .cd-body h5 { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--accent); margin: 18px 0 6px; }
+    .case-detail .cd-body h5:first-child { margin-top: 0; }
+    .case-detail .cd-body p { font-size: 15px; color: #334155; line-height: 1.7; }
+    .case-detail .cd-note { margin-top: 22px; padding: 12px 16px; background: var(--accent-soft); border-radius: 10px; font-size: 13px; color: #1e3a8a; }
+
+    /* ---------- Academic research ---------- */
+    .intro-note { max-width: 720px; margin: 0 auto 40px; text-align: center; color: #334155; font-size: 15.5px; line-height: 1.7; }
+    .papers { max-width: 1000px; margin: 0 auto; display: grid; gap: 16px; }
+    .paper { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+    .paper .p-head { padding: 20px 24px; cursor: pointer; display: flex; align-items: flex-start; gap: 16px; }
+    .paper .p-head:hover { background: var(--bg-alt); }
+    .paper .p-badge { flex-shrink: 0; width: 108px; text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.2px; padding: 6px 8px; border-radius: 8px; margin-top: 1px; background: var(--accent-soft); color: var(--accent); line-height: 1.3; }
+    .paper .p-main { flex: 1; }
+    .paper .p-title { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.35; }
+    .paper .p-meta { font-size: 13px; color: var(--slate); margin-top: 4px; }
+    .paper .p-toggle { flex-shrink: 0; color: var(--slate); font-size: 20px; line-height: 1; transition: transform 0.2s; margin-top: 2px; }
+    .paper.open .p-toggle { transform: rotate(45deg); }
+    .paper .p-detail { display: none; padding: 0 24px 22px 24px; }
+    .paper.open .p-detail { display: block; }
+    .paper .p-detail p { font-size: 14.5px; color: #334155; line-height: 1.65; }
+    .paper .p-detail a { color: var(--accent); font-weight: 600; text-decoration: none; font-size: 14px; display: inline-block; margin-top: 10px; }
+    .paper .p-detail a:hover { text-decoration: underline; }
+
+    .footer { padding: 40px 0; text-align: center; color: var(--slate); font-size: 12.5px; line-height: 1.7; border-top: 1px solid var(--line); }
+
+    @media (max-width: 860px) {
+        .nav-inner { gap: 20px; }
+        .menu { display: none; }
+        .hero h2 { font-size: 34px; }
+        .slide.active { grid-template-columns: 1fr; }
+        .slide-chart { border-right: none; border-bottom: 1px solid var(--line); }
+        .lens-grid, .steps, .learn-grid, .research .wrap, .about { grid-template-columns: 1fr; }
+        .about .avatar { margin: 0 auto; }
+    }
+</style>
 </head>
 <body>
-    <div class="nav">
-        <h1>ERPSA</h1>
-        <div>
-            <a href="/">Home</a>
+
+<!-- ============ NAV ============ -->
+<nav class="nav">
+    <div class="nav-inner">
+        <a class="brand" href="#top">
+            <svg class="logo" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="14" stroke="#2563eb" stroke-width="2" opacity="0.35"/>
+                <circle cx="16" cy="16" r="8.5" stroke="#2563eb" stroke-width="2" opacity="0.6"/>
+                <circle cx="16" cy="16" r="2.6" fill="#dc2626"/>
+                <line x1="16" y1="16" x2="27" y2="6.5" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <h1>S&amp;P 500 <span>Risk Radar</span></h1>
+        </a>
+        <div class="menu">
+            <a href="#top">Home</a>
             <a href="/analyze">Analyze</a>
+            <a href="#learning">Learning</a>
+            <a href="#research">Research</a>
+            <a href="https://akilanvadivelan.substack.com" target="_blank" rel="noopener">Substack <span class="ext">&#8599;</span></a>
+            <a href="#about">About</a>
+        </div>
+        <div class="nav-actions">
+            <button class="signin-btn" disabled title="Coming soon">Sign In</button>
         </div>
     </div>
+</nav>
 
-    <div class="hero">
-        <h2>Predict Corporate Risk<br><span>Before the Numbers Show It</span></h2>
-        <p>
-            ERPSA reads what companies are legally forced to tell you in their SEC filings,
-            detects when their language shifts from routine to alarming, and scores the probability
-            of bad things happening — months before Wall Street notices.
-        </p>
-        <a href="/analyze" class="cta">Start Analysis</a>
+<!-- ============ HERO ============ -->
+<div id="top" class="hero">
+    <span class="eyebrow">For everyday investors, powered by research</span>
+    <h2>We read the warning signs that companies have<br><span>buried in their filings</span></h2>
+    <p>
+        Every S&amp;P 500 company reveals what is going wrong, in the <b>numbers behind its business</b>
+        (profits, debt, inventory, cash flow) and in the <b>risk warnings inside its own reports</b>.
+        S&amp;P 500 Risk Radar examines both closely, tracks what has changed since last year, and
+        surfaces the signals before the stock price falls.
+    </p>
+    <a href="/analyze" class="cta">Start Analysis</a>
+    <a href="#examples" class="cta ghost">See real examples</a>
+</div>
+
+<!-- ============ CAROUSEL ============ -->
+<section id="examples" class="section-alt">
+    <div class="section-head">
+        <div class="kicker">Real Cases</div>
+        <h3>The warning came first. Then the price.</h3>
+        <p>Three real S&amp;P 500 companies where the risk was disclosed months before the stock reacted.</p>
     </div>
 
-    <div class="how-it-works">
-        <h3>How It Works</h3>
-        <div class="steps">
-            <div class="step">
-                <div class="num">1</div>
-                <h4>Enter a Ticker</h4>
-                <p>Type any publicly-traded company's stock ticker (like AAPL, TSLA, TGT). We pull their actual 10-K filings directly from the SEC.</p>
+    <div class="carousel">
+        <!-- ===== SLIDE 1: TARGET ===== -->
+        <div class="slide active" data-slide="0">
+            <div class="slide-chart">
+                <div class="co"><span class="tk">TGT</span><span class="nm">Target Corporation</span></div>
+                <div class="period">Monthly close, May 2021 to June 2022</div>
+                <svg viewBox="0 0 860 360" role="img" aria-label="Target monthly stock price">
+                    <g stroke="#e5e9f0" stroke-width="1">
+                        <line x1="70" y1="300" x2="820" y2="300"/>
+                        <line x1="70" y1="210" x2="820" y2="210"/>
+                        <line x1="70" y1="120" x2="820" y2="120"/>
+                        <line x1="70" y1="30" x2="820" y2="30"/>
+                    </g>
+                    <g fill="#94a3b8" font-size="11" text-anchor="end">
+                        <text x="60" y="304">$150</text><text x="60" y="214">$190</text>
+                        <text x="60" y="124">$230</text><text x="60" y="34">$270</text>
+                    </g>
+                    <!-- window between risk-disclosed and fall -->
+                    <rect x="470" y="30" width="300" height="270" fill="#f59e0b" opacity="0.06"/>
+                    <polyline fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                        points="70,168.4 120,126.1 170,89.7 220,50.1 270,83.2 320,123.6 370,57.2 420,96.6 470,116.8 520,144.2 570,143.8 620,163.8 670,123.0 720,153.1 770,273.9 820,285.3"/>
+                    <!-- risk exposed arrow (~Jan 2022, x=470) -->
+                    <g>
+                        <line x1="470" y1="60" x2="470" y2="108" stroke="#b45309" stroke-width="1.5" marker-end="url(#amberArrow)"/>
+                        <text x="470" y="52" fill="#b45309" font-size="11.5" text-anchor="middle" font-weight="600">Risk exposed</text>
+                    </g>
+                    <!-- stock fell arrow (May 18, x=770) -->
+                    <g>
+                        <line x1="770" y1="228" x2="770" y2="262" stroke="#dc2626" stroke-width="1.5" marker-end="url(#redArrow)"/>
+                        <circle cx="770" cy="273.9" r="4.5" fill="#dc2626"/>
+                        <text x="770" y="220" fill="#dc2626" font-size="11.5" text-anchor="middle" font-weight="700">Stock fell 24.9%</text>
+                    </g>
+                    <!-- gap label -->
+                    <text x="620" y="322" fill="#b45309" font-size="11" text-anchor="middle">about 4 months between warning and fall</text>
+                    <g fill="#94a3b8" font-size="10.5" text-anchor="middle">
+                        <text x="70" y="318">May '21</text><text x="420" y="318">Dec '21</text><text x="820" y="318">Jun '22</text>
+                    </g>
+                    <defs>
+                        <marker id="amberArrow" markerWidth="8" markerHeight="8" refX="4" refY="7" orient="auto"><path d="M0,0 L4,7 L8,0" fill="#b45309"/></marker>
+                        <marker id="redArrow" markerWidth="8" markerHeight="8" refX="4" refY="7" orient="auto"><path d="M0,0 L4,7 L8,0" fill="#dc2626"/></marker>
+                    </defs>
+                </svg>
             </div>
-            <div class="step">
-                <div class="num">2</div>
-                <h4>Pick Two Years</h4>
-                <p>Choose which years to compare. The system extracts the "Risk Factors" section from each filing and compares them word-by-word.</p>
+            <div class="slide-info">
+                <div class="info-block risk">
+                    <div class="lbl">The risk in the report</div>
+                    <p>New language about <b>excess inventory</b>, supply chain disruption, and rising costs appeared, replacing calmer boilerplate from the year before.</p>
+                </div>
+                <div class="info-block event">
+                    <div class="lbl">What happened at earnings</div>
+                    <p>On May 18, 2022, Target cut its operating margin guidance from over 8 percent to about 6 percent, citing the very cost and inventory pressures it had flagged.</p>
+                </div>
+                <div class="info-block stock">
+                    <div class="lbl">What happened to the stock</div>
+                    <p>Shares fell <b>24.9 percent in a single day</b> to $161.61, the worst session since 1987, erasing roughly $25 billion in value.</p>
+                </div>
             </div>
-            <div class="step">
-                <div class="num">3</div>
-                <h4>See the Signals</h4>
-                <p>Get a scored breakdown of every risk: what changed, how severe the language is, and what it means in plain English. High scores = danger ahead.</p>
+        </div>
+
+        <!-- ===== SLIDE 2: SOUTHWEST ===== -->
+        <div class="slide" data-slide="1">
+            <div class="slide-chart">
+                <div class="co"><span class="tk">LUV</span><span class="nm">Southwest Airlines</span></div>
+                <div class="period">Monthly close, January 2022 to January 2023</div>
+                <svg viewBox="0 0 860 360" role="img" aria-label="Southwest monthly stock price">
+                    <g stroke="#e5e9f0" stroke-width="1">
+                        <line x1="70" y1="300" x2="820" y2="300"/>
+                        <line x1="70" y1="210" x2="820" y2="210"/>
+                        <line x1="70" y1="120" x2="820" y2="120"/>
+                        <line x1="70" y1="30" x2="820" y2="30"/>
+                    </g>
+                    <g fill="#94a3b8" font-size="11" text-anchor="end">
+                        <text x="60" y="304">$28</text><text x="60" y="214">$35</text>
+                        <text x="60" y="124">$43</text><text x="60" y="34">$50</text>
+                    </g>
+                    <rect x="445" y="30" width="313" height="270" fill="#f59e0b" opacity="0.06"/>
+                    <polyline fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                        points="70,103.6 132.5,89.2 195,128.8 257.5,80.2 320,72.6 382.5,101.8 445,192.9 507.5,173.5 570,194.1 632.5,260.5 695,190.3 757.5,151.7 820,243.5"/>
+                    <!-- risk exposed (~Jul 2022, x=445) -->
+                    <g>
+                        <line x1="445" y1="150" x2="445" y2="184" stroke="#b45309" stroke-width="1.5" marker-end="url(#amberArrow2)"/>
+                        <text x="445" y="142" fill="#b45309" font-size="11.5" text-anchor="middle" font-weight="600">Risk exposed</text>
+                    </g>
+                    <!-- stock fell (late Dec, x=757.5 -> Jan low 820) -->
+                    <g>
+                        <line x1="820" y1="200" x2="820" y2="232" stroke="#dc2626" stroke-width="1.5" marker-end="url(#redArrow2)"/>
+                        <circle cx="820" cy="243.5" r="4.5" fill="#dc2626"/>
+                        <text x="800" y="192" fill="#dc2626" font-size="11.5" text-anchor="end" font-weight="700">Meltdown, fell 15.6%</text>
+                    </g>
+                    <text x="632" y="322" fill="#b45309" font-size="11" text-anchor="middle">about 5 months between warning and fall</text>
+                    <g fill="#94a3b8" font-size="10.5" text-anchor="middle">
+                        <text x="70" y="318">Jan '22</text><text x="445" y="318">Jul '22</text><text x="820" y="318">Jan '23</text>
+                    </g>
+                    <defs>
+                        <marker id="amberArrow2" markerWidth="8" markerHeight="8" refX="4" refY="7" orient="auto"><path d="M0,0 L4,7 L8,0" fill="#b45309"/></marker>
+                        <marker id="redArrow2" markerWidth="8" markerHeight="8" refX="4" refY="7" orient="auto"><path d="M0,0 L4,7 L8,0" fill="#dc2626"/></marker>
+                    </defs>
+                </svg>
+            </div>
+            <div class="slide-info">
+                <div class="info-block risk">
+                    <div class="lbl">The risk in the report</div>
+                    <p>Filings repeatedly flagged reliance on <b>aging technology and crew scheduling systems</b>, an operational risk that had been disclosed for years.</p>
+                </div>
+                <div class="info-block event">
+                    <div class="lbl">What happened at the event</div>
+                    <p>A December 2022 winter storm overwhelmed those systems, forcing thousands of cancellations and stranding travelers over the holidays.</p>
+                </div>
+                <div class="info-block stock">
+                    <div class="lbl">What happened to the stock</div>
+                    <p>Shares fell about <b>15.6 percent in December 2022</b> as the operational meltdown played out in public.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== SLIDE 3: SVB ===== -->
+        <div class="slide" data-slide="2">
+            <div class="slide-chart">
+                <div class="co"><span class="tk">SIVB</span><span class="nm">SVB Financial (Silicon Valley Bank)</span></div>
+                <div class="period">Monthly close, March 2022 to March 2023</div>
+                <svg viewBox="0 0 860 360" role="img" aria-label="SVB monthly stock price">
+                    <g stroke="#e5e9f0" stroke-width="1">
+                        <line x1="70" y1="300" x2="820" y2="300"/>
+                        <line x1="70" y1="210" x2="820" y2="210"/>
+                        <line x1="70" y1="120" x2="820" y2="120"/>
+                        <line x1="70" y1="30" x2="820" y2="30"/>
+                    </g>
+                    <g fill="#94a3b8" font-size="11" text-anchor="end">
+                        <text x="60" y="304">$80</text><text x="60" y="214">$253</text>
+                        <text x="60" y="124">$427</text><text x="60" y="34">$600</text>
+                    </g>
+                    <rect x="70" y="30" width="750" height="270" fill="#f59e0b" opacity="0.05"/>
+                    <polyline fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                        points="70,51.1 123.6,88.3 177.1,87.9 230.7,136.4 284.3,132.0 337.9,130.5 391.4,167.2 445,221.6 498.6,222.6 552.1,222.0 605.7,224.6 659.3,191.9 712.9,194.6 766.4,202.5 820,286.5"/>
+                    <!-- risk exposed early (interest rate risk building, x=70) -->
+                    <g>
+                        <line x1="120" y1="90" x2="120" y2="62" stroke="#b45309" stroke-width="1.5" marker-end="url(#amberArrow3)"/>
+                        <text x="120" y="112" fill="#b45309" font-size="11.5" text-anchor="middle" font-weight="600">Risk building</text>
+                    </g>
+                    <!-- stock fell (Mar 9, x=820) -->
+                    <g>
+                        <line x1="820" y1="243" x2="820" y2="275" stroke="#dc2626" stroke-width="1.5" marker-end="url(#redArrow3)"/>
+                        <circle cx="820" cy="286.5" r="4.5" fill="#dc2626"/>
+                        <text x="800" y="235" fill="#dc2626" font-size="11.5" text-anchor="end" font-weight="700">Collapsed, halted Mar 10</text>
+                    </g>
+                    <text x="440" y="322" fill="#b45309" font-size="11" text-anchor="middle">about 12 months of quiet decline, then failure in days</text>
+                    <g fill="#94a3b8" font-size="10.5" text-anchor="middle">
+                        <text x="70" y="318">Mar '22</text><text x="445" y="318">Sep '22</text><text x="820" y="318">Mar '23</text>
+                    </g>
+                    <defs>
+                        <marker id="amberArrow3" markerWidth="8" markerHeight="8" refX="4" refY="1" orient="auto"><path d="M0,8 L4,1 L8,8" fill="#b45309"/></marker>
+                        <marker id="redArrow3" markerWidth="8" markerHeight="8" refX="4" refY="7" orient="auto"><path d="M0,0 L4,7 L8,0" fill="#dc2626"/></marker>
+                    </defs>
+                </svg>
+            </div>
+            <div class="slide-info">
+                <div class="info-block risk">
+                    <div class="lbl">The risk in the report</div>
+                    <p>Filings disclosed a large bond portfolio exposed to <b>rising interest rates</b>, along with a deposit base concentrated in tech startups.</p>
+                </div>
+                <div class="info-block event">
+                    <div class="lbl">What happened at the event</div>
+                    <p>In March 2023 the bank sold bonds at a loss and tried to raise capital. Depositors rushed to withdraw, triggering a classic bank run.</p>
+                </div>
+                <div class="info-block stock">
+                    <div class="lbl">What happened to the stock</div>
+                    <p>Shares crashed from about <b>$268 to $106 on March 9</b>, then trading was halted on March 10 as regulators shut the bank down.</p>
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="research">
-        <div class="card">
-            <div class="stat">22%/year</div>
-            <h4>Academic Backing: "Lazy Prices" (Harvard, 2020)</h4>
-            <p>A portfolio strategy that simply buys stocks of companies with unchanged filings and sells those with changed filings earned 22% per year in abnormal returns. The research proves that textual changes predict future problems — but almost nobody reads these documents.</p>
+    <div class="carousel-controls">
+        <button class="arrow-btn" onclick="move(-1)" aria-label="Previous">&#8592;</button>
+        <div class="dots">
+            <button class="dot active" onclick="go(0)">1</button>
+            <button class="dot" onclick="go(1)">2</button>
+            <button class="dot" onclick="go(2)">3</button>
         </div>
-        <div class="card">
-            <h4>Why This Works</h4>
-            <p>Companies are legally required to disclose risks. They KNOW about problems before the numbers show it. But they bury the warnings in 200-page documents using dense legal language. A computer that reads everything, every year, and measures what changed — has an enormous edge over humans who just look at stock prices.</p>
+        <button class="arrow-btn" onclick="move(1)" aria-label="Next">&#8594;</button>
+    </div>
+</section>
+
+<!-- ============ TWO LENSES ============ -->
+<section>
+    <div class="section-head">
+        <div class="kicker">The Method</div>
+        <h3>Two ways to see risk</h3>
+        <p>The numbers show where a company has been. The risk warnings hint at where it is going. Most investors watch only one. We read both.</p>
+    </div>
+    <div class="lens-grid">
+        <div class="lens numbers">
+            <div class="tag">The Numbers, looks at the past</div>
+            <h4>Financial health</h4>
+            <p class="desc">Signals hiding in the balance sheet and income statement, the story the reported figures tell.</p>
+            <ul>
+                <li>Revenue and margin trends, the profit squeeze</li>
+                <li>Inventory piling up faster than sales</li>
+                <li>Receivables and cash flow quality</li>
+                <li>Debt, leverage, and interest coverage</li>
+                <li>Guidance cuts against prior expectations</li>
+            </ul>
+        </div>
+        <div class="lens words">
+            <div class="tag">The Words, looks at the future</div>
+            <h4>Risk factor language</h4>
+            <p class="desc">What companies are legally required to disclose, and how their tone shifts when trouble is coming.</p>
+            <ul>
+                <li>Brand new risks that were not there last year</li>
+                <li>Boilerplate turning specific and urgent</li>
+                <li>Negative and uncertainty word density rising</li>
+                <li>Risks quietly dropped or downplayed</li>
+                <li>Shifts the market has not priced in yet</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- ============ HOW IT WORKS ============ -->
+<section class="section-alt">
+    <div class="section-head">
+        <div class="kicker">How It Works</div>
+        <h3>Three simple steps</h3>
+    </div>
+    <div class="steps">
+        <div class="step">
+            <div class="num">1</div>
+            <h4>Pick a company</h4>
+            <p>Choose any company in the S&amp;P 500. We pull its official reports and yearly filings automatically.</p>
+        </div>
+        <div class="step">
+            <div class="num">2</div>
+            <h4>We read everything</h4>
+            <p>We compare this year to last year, both the numbers and the risk warnings, and pinpoint what changed.</p>
+        </div>
+        <div class="step">
+            <div class="num">3</div>
+            <h4>See the warning signs</h4>
+            <p>Get a plain English breakdown of each risk with a score from 0 to 100. Higher means a louder warning.</p>
+        </div>
+    </div>
+</section>
+
+<!-- ============ LEARNING ============ -->
+<section id="learning">
+    <div class="section-head">
+        <div class="kicker">Learning</div>
+        <h3>What the filings were telling us</h3>
+        <p>Short, plain English case studies on the risks we find hiding inside company reports.</p>
+    </div>
+    <div class="learn-grid">
+        <button class="learn-card" onclick="openCase('tgt')">
+            <div class="thumb t1"></div>
+            <div class="body">
+                <div class="meta">Case study &middot; Retail</div>
+                <h4>What Target's 2022 filing quietly said before the fall</h4>
+                <p>How language about excess inventory foreshadowed the worst trading day in 35 years.</p>
+            </div>
+        </button>
+        <button class="learn-card" onclick="openCase('luv')">
+            <div class="thumb t2"></div>
+            <div class="body">
+                <div class="meta">Case study &middot; Airlines</div>
+                <h4>Southwest warned about its own systems for years</h4>
+                <p>An operational risk sat in plain sight until a winter storm turned it into a meltdown.</p>
+            </div>
+        </button>
+        <button class="learn-card" onclick="openCase('sivb')">
+            <div class="thumb t3"></div>
+            <div class="body">
+                <div class="meta">Case study &middot; Banking</div>
+                <h4>The interest rate risk that ended Silicon Valley Bank</h4>
+                <p>A bond portfolio and a concentrated deposit base, both public, both overlooked.</p>
+            </div>
+        </button>
+    </div>
+
+    <!-- Inline expandable case study details -->
+    <div id="case-tgt" class="case-detail">
+        <div class="cd-head">
+            <div>
+                <div class="cd-title">Target (TGT), 2022</div>
+                <div class="cd-tag">Retail &middot; the profit squeeze that showed up in words first</div>
+            </div>
+            <button class="cd-close" onclick="closeCase()">Close</button>
+        </div>
+        <div class="cd-body">
+            <h5>What changed in the filing</h5>
+            <p>Compared with the prior year, Target's risk language grew more specific about excess inventory, supply chain disruption, and rising costs. The calm, repeated boilerplate of earlier filings gave way to sharper, more concrete warnings.</p>
+            <h5>What happened next</h5>
+            <p>On May 18, 2022, Target reported first quarter results and cut its operating margin outlook from over 8 percent to about 6 percent, pointing to the same inventory and cost pressures. The stock fell 24.9 percent in a single session to $161.61, its worst day since 1987, erasing roughly $25 billion in value.</p>
+            <h5>The takeaway</h5>
+            <p>The numbers still looked healthy on the surface. The words were already less confident. Reading both together gave a fuller picture than watching the price alone.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
         </div>
     </div>
 
-    <div class="footer">
-        ERPSA v1.0 | Built on: Cohen et al. "Lazy Prices" (2020) + Loughran & McDonald Financial Sentiment (2011)<br>
-        Data from SEC EDGAR (free, public) | Not investment advice
+    <div id="case-luv" class="case-detail">
+        <div class="cd-head">
+            <div>
+                <div class="cd-title">Southwest Airlines (LUV), 2022</div>
+                <div class="cd-tag">Airlines &middot; a known operational risk that finally broke</div>
+            </div>
+            <button class="cd-close" onclick="closeCase()">Close</button>
+        </div>
+        <div class="cd-body">
+            <h5>What the filing said</h5>
+            <p>For years, Southwest's filings flagged its reliance on aging technology and crew scheduling systems as an operational risk. The warning was consistent and public, but it read as routine and drew little attention.</p>
+            <h5>What happened next</h5>
+            <p>A severe winter storm in December 2022 overwhelmed those very systems, forcing thousands of cancellations and stranding travelers over the holidays. The stock fell about 15.6 percent that month as the meltdown played out.</p>
+            <h5>The takeaway</h5>
+            <p>A risk that a company repeats year after year is easy to tune out. Tracking which disclosed risks are most exposed can help decide which ones deserve a second look.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+        </div>
     </div>
+
+    <div id="case-sivb" class="case-detail">
+        <div class="cd-head">
+            <div>
+                <div class="cd-title">SVB Financial, Silicon Valley Bank (SIVB), 2022 to 2023</div>
+                <div class="cd-tag">Banking &middot; interest rate risk that was disclosed all along</div>
+            </div>
+            <button class="cd-close" onclick="closeCase()">Close</button>
+        </div>
+        <div class="cd-body">
+            <h5>What the filing said</h5>
+            <p>SVB's filings described a large bond portfolio exposed to rising interest rates and a deposit base heavily concentrated in technology startups. Both of these were stated plainly in its reports.</p>
+            <h5>What happened next</h5>
+            <p>As rates rose through 2022, the stock drifted down from about $559 to the low $200s. In March 2023 the bank sold bonds at a loss and tried to raise capital. Depositors rushed to withdraw, the stock crashed from about $268 to $106 on March 9, and trading was halted on March 10 as regulators closed the bank.</p>
+            <h5>The takeaway</h5>
+            <p>The two ingredients of the failure were both in the filings well before the collapse. The story moved slowly for a year, then very fast in a matter of days.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ RESEARCH STRIP ============ -->
+<section class="research">
+    <div class="wrap">
+        <div class="big">22%<span>per year in abnormal returns (Lazy Prices, 2020)</span></div>
+        <div>
+            <h3>Grounded in decades of research</h3>
+            <p>The finding that filing language predicts future problems is not new. In one landmark study, buying companies whose filings barely changed and selling those whose filings changed a lot earned roughly 22 percent per year. The reason it keeps working is that almost nobody reads these documents. See the papers below, including two from the University of Washington.</p>
+        </div>
+    </div>
+</section>
+
+<!-- ============ ACADEMIC RESEARCH ============ -->
+<section id="research">
+    <div class="section-head">
+        <div class="kicker">Academic Research</div>
+        <h3>Standing on the work of others</h3>
+    </div>
+    <p class="intro-note">
+        This project takes its inspiration from finance and accounting professors who have studied, over many years,
+        how the risk language in company filings can foreshadow what comes next. S&amp;P 500 Risk Radar does not claim
+        new research. It is a student's attempt to explore, in real companies, whether the patterns these researchers
+        described actually show up in the real world. The papers below are the foundation for that idea.
+    </p>
+
+    <div class="papers">
+        <!-- Lazy Prices -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Harvard &amp; DePaul</span>
+                <div class="p-main">
+                    <div class="p-title">Lazy Prices</div>
+                    <div class="p-meta">Lauren Cohen, Christopher Malloy, and Quoc Nguyen (2020) &middot; The Journal of Finance</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>The anchor paper for this project. Studying two decades of company filings, the authors showed that changes in filing language, especially in the risk and management sections, predict weaker future returns. A strategy of buying companies whose filings barely changed and selling those whose filings changed a lot earned roughly 22 percent per year. The reason it works is investor inattention. Almost nobody reads these long documents closely.</p>
+                <a href="https://onlinelibrary.wiley.com/doi/10.1111/jofi.12885" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Loughran McDonald -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Notre Dame</span>
+                <div class="p-main">
+                    <div class="p-title">When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks</div>
+                    <div class="p-meta">Tim Loughran and Bill McDonald (2011) &middot; The Journal of Finance</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Built the finance specific word lists that this project relies on for reading tone. The authors showed that general purpose sentiment dictionaries misread financial writing, because words like liability or tax are neutral in a finance context. Their negative and uncertainty word lists became the standard tool for measuring tone in filings, and Risk Radar uses this approach for the words half of its analysis.</p>
+                <a href="https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.2010.01625.x" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Campbell et al -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Georgia &amp; Arizona</span>
+                <div class="p-main">
+                    <div class="p-title">The Information Content of Mandatory Risk Factor Disclosures in Corporate Filings</div>
+                    <div class="p-meta">John Campbell, Hsinchun Chen, Dan Dhaliwal, Hsin-min Lu, and Logan Steele (2014) &middot; Review of Accounting Studies</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Examined whether the risk factor section is meaningful or just boilerplate. The authors found that firms facing greater risk disclose more risk factors, and that the type of risk a firm describes, whether financial, legal, or otherwise, lines up with the actual risk it faces. This supports the idea that the risk section carries real information about the company.</p>
+                <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1694279" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Kravet Muslu -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">UConn &amp; UT Dallas</span>
+                <div class="p-main">
+                    <div class="p-title">Textual Risk Disclosures and Investors' Risk Perceptions</div>
+                    <div class="p-meta">Todd Kravet and Volkan Muslu (2013) &middot; Review of Accounting Studies</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Studied what happens when a firm increases its risk language from one year to the next. The authors found that these annual increases are followed by higher stock return volatility and trading volume around and after the filing, along with more spread out analyst forecasts. In short, when companies say more about risk, the market treats them as riskier.</p>
+                <a href="https://link.springer.com/article/10.1007/s11142-013-9228-9" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Hope Hu Lu -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Toronto</span>
+                <div class="p-main">
+                    <div class="p-title">The Benefits of Specific Risk-Factor Disclosures</div>
+                    <div class="p-meta">Ole-Kristian Hope, Danqi Hu, and Hai Lu (2016) &middot; Review of Accounting Studies</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Asked whether it matters how specific a risk factor is, rather than just how many there are. The authors found that more specific risk factors, as opposed to vague boilerplate, are more useful to investors and analysts. This matters for Risk Radar, because a generic warning and a concrete, detailed one are not the same signal.</p>
+                <a href="https://link.springer.com/article/10.1007/s11142-016-9371-1" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+
+        <!-- Gaulin -->
+        <div class="paper">
+            <div class="p-head" onclick="togglePaper(this)">
+                <span class="p-badge">Rice</span>
+                <div class="p-main">
+                    <div class="p-title">The Information Content of Risk Factor Disclosures in Quarterly Reports</div>
+                    <div class="p-meta">Maclean Gaulin (2015) &middot; Accounting Horizons</div>
+                </div>
+                <span class="p-toggle">+</span>
+            </div>
+            <div class="p-detail">
+                <p>Looked at what happens when firms update their risk factors during the year. The study found that companies that add or change risk factors tend to have lower future unexpected earnings and are more likely to suffer sharp negative earnings surprises. In other words, updates to the risk section often arrive as an early warning of bad news.</p>
+                <a href="https://publications.aaahq.org/accounting-horizons/article-abstract/29/4/887/2223/" target="_blank" rel="noopener">View the paper &#8599;</a>
+            </div>
+        </div>
+    </div>
+
+    <p class="intro-note" style="margin-top:36px; margin-bottom:0; font-size:13.5px; color:var(--slate);">
+        A note on Washington state. The landmark Lazy Prices research was presented at the University of Washington
+        and Washington State University while it was being developed, and the Foster School of Business at the
+        University of Washington has active researchers in financial reporting and disclosure. This work has deep
+        roots close to home.
+    </p>
+</section>
+
+<!-- ============ ABOUT ============ -->
+<section id="about" class="section-alt">
+    <div class="section-head">
+        <div class="kicker">About</div>
+        <h3>Who built this</h3>
+    </div>
+    <div class="about">
+        <svg class="avatar" viewBox="0 0 132 132">
+            <rect width="132" height="132" rx="20" fill="#0b1b34"/>
+            <polyline points="18,96 42,74 62,84 84,50 108,60" fill="none" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+            <circle cx="108" cy="60" r="4.5" fill="#dc2626"/>
+            <text x="66" y="46" text-anchor="middle" fill="#ffffff" font-size="30" font-weight="800" font-family="sans-serif">AV</text>
+        </svg>
+        <div>
+            <h3>Akilan Vadivelan</h3>
+            <div class="role">North Creek High School, Class of 2027 &middot; future finance</div>
+            <p>I am a high school senior planning a career in finance. I believe finance is the backbone of everyday life and of every organization, whether a young startup or a century old giant. I am drawn to the stories behind the numbers, especially how struggling companies use strategy and finance to reinvent themselves, which I explore in my Substack.</p>
+            <p class="why">The idea is simple. The warning signs are already public, buried in filings that few people read. S&amp;P 500 Risk Radar is my attempt to surface them early, and to test a question that fascinates me. Can the words predict the fall before the numbers do?</p>
+            <a class="sub-link" href="https://akilanvadivelan.substack.com" target="_blank" rel="noopener">Read my Substack &#8599;</a>
+        </div>
+    </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<div class="footer">
+    <div class="wrap">
+        S&amp;P 500 Risk Radar<br>
+        Built on Cohen, Malloy and Nguyen "Lazy Prices" (2020) and Loughran and McDonald Financial Sentiment (2011)<br>
+        Price data from company investor relations. Filings from SEC EDGAR. Not investment advice.
+    </div>
+</div>
+
+<script>
+    var slides = document.querySelectorAll('.slide');
+    var dots = document.querySelectorAll('.dot');
+    var cur = 0;
+    function render() {
+        slides.forEach(function(s, i){ s.classList.toggle('active', i === cur); });
+        dots.forEach(function(d, i){ d.classList.toggle('active', i === cur); });
+    }
+    function go(i) { cur = (i + slides.length) % slides.length; render(); }
+    function move(d) { go(cur + d); }
+
+    // Inline case study open/close
+    function openCase(id) {
+        document.querySelectorAll('.case-detail').forEach(function(c){ c.classList.remove('open'); });
+        var el = document.getElementById('case-' + id);
+        if (el) {
+            el.classList.add('open');
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+    function closeCase() {
+        document.querySelectorAll('.case-detail').forEach(function(c){ c.classList.remove('open'); });
+    }
+
+    // Academic paper expand/collapse
+    function togglePaper(head) {
+        head.parentElement.classList.toggle('open');
+    }
+</script>
 </body>
-</html>"""
+</html>
+"""
 
 
 
 ANALYZE_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ERPSA - Analyze</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
-        .nav { background: #111827; border-bottom: 1px solid #1f2937; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; }
-        .nav h1 { font-size: 20px; color: #60a5fa; }
-        .nav a { color: #9ca3af; text-decoration: none; margin-left: 24px; font-size: 14px; }
-        .nav a:hover { color: #60a5fa; }
-        .container { max-width: 1100px; margin: 0 auto; padding: 40px; }
-        h2 { font-size: 28px; margin-bottom: 8px; }
-        .subtitle { color: #9ca3af; margin-bottom: 30px; font-size: 15px; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analyze - S&amp;P 500 Risk Radar</title>
+<style>
+    :root {
+        --bg: #ffffff; --bg-alt: #f7f9fc; --navy: #0b1b34; --ink: #0f172a;
+        --slate: #64748b; --line: #e5e9f0; --accent: #2563eb; --accent-soft: #eff4ff;
+        --red: #dc2626; --amber: #b45309;
+        --shadow: 0 1px 3px rgba(15,23,42,0.06), 0 8px 24px rgba(15,23,42,0.05);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg-alt); color: var(--ink); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+    a { color: inherit; }
 
-        .input-section { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 28px; margin-bottom: 24px; }
-        .input-section h3 { color: #60a5fa; margin-bottom: 16px; font-size: 16px; }
-        .form-row { display: flex; gap: 16px; align-items: end; flex-wrap: wrap; }
-        .form-group { display: flex; flex-direction: column; }
-        .form-group label { font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-        input, select { background: #0a0e17; border: 1px solid #374151; border-radius: 8px; color: #e2e8f0; padding: 10px 14px; font-size: 14px; }
-        input:focus, select:focus { outline: none; border-color: #60a5fa; }
-        select { min-width: 160px; }
-        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
-        .btn-blue { background: #3b82f6; color: white; }
-        .btn-blue:hover { background: #2563eb; }
-        .btn-blue:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
-        .btn-green { background: #10b981; color: white; }
-        .btn-green:hover { background: #059669; }
-        .btn-gray { background: #374151; color: #9ca3af; }
-        .btn-gray:hover { background: #4b5563; }
+    .nav { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,0.9); backdrop-filter: saturate(180%) blur(12px); border-bottom: 1px solid var(--line); }
+    .nav-inner { max-width: 1000px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 40px; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .brand .logo { width: 26px; height: 26px; }
+    .brand h1 { font-size: 16px; color: var(--ink); font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; }
+    .brand h1 span { color: var(--accent); }
+    .menu { display: flex; align-items: center; gap: 26px; }
+    .menu a { color: var(--slate); text-decoration: none; font-size: 14px; font-weight: 500; }
+    .menu a:hover { color: var(--ink); }
+    .nav-actions { margin-left: auto; }
+    .signin-btn { padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: #f1f5f9; color: #94a3b8; font-size: 13px; font-weight: 600; cursor: not-allowed; font-family: inherit; }
 
-        .status { margin-top: 12px; font-size: 13px; color: #9ca3af; min-height: 20px; }
-        .status.error { color: #f87171; }
-        .status.success { color: #34d399; }
+    .container { max-width: 820px; margin: 0 auto; padding: 40px 24px 80px; }
 
-        .results { display: none; margin-top: 30px; }
-        .results.show { display: block; }
-        .results-header { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
-        .results-header h3 { color: #60a5fa; margin-bottom: 12px; font-size: 18px; }
-        .stats-row { display: flex; gap: 16px; flex-wrap: wrap; }
-        .stat-box { background: #0a0e17; border-radius: 8px; padding: 14px 20px; min-width: 130px; }
-        .stat-box .value { font-size: 22px; font-weight: 700; }
-        .stat-box .label { font-size: 11px; color: #9ca3af; text-transform: uppercase; }
+    .search { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 32px; box-shadow: var(--shadow); text-align: center; }
+    .search h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
+    .search p { color: var(--slate); font-size: 15px; margin-bottom: 24px; }
+    .search-row { display: flex; gap: 10px; max-width: 440px; margin: 0 auto; }
+    .search-row input { flex: 1; background: var(--bg-alt); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); padding: 13px 16px; font-size: 16px; font-family: inherit; text-transform: uppercase; }
+    .search-row input:focus { outline: none; border-color: var(--accent); background: #fff; }
+    .search-row button { padding: 13px 26px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .search-row button:hover { background: #1d4fd7; }
+    .search-row button:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .hint { margin-top: 14px; font-size: 13px; color: var(--slate); }
 
-        .risk-card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin-bottom: 16px; border-left: 5px solid #374151; transition: all 0.3s; }
-        .risk-card:hover { border-color: #60a5fa; }
-        .risk-card.very-high { border-left-color: #ef4444; }
-        .risk-card.high { border-left-color: #f97316; }
-        .risk-card.medium-high { border-left-color: #eab308; }
-        .risk-card.medium { border-left-color: #a3e635; }
-        .risk-card.low { border-left-color: #22c55e; }
-        .risk-card .top-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
-        .risk-card .title { font-size: 16px; font-weight: 600; flex: 1; margin-right: 16px; }
-        .risk-card .score { font-size: 32px; font-weight: 700; line-height: 1; }
-        .risk-card .score.very-high { color: #fca5a5; }
-        .risk-card .score.high { color: #fdba74; }
-        .risk-card .score.medium-high { color: #fde047; }
-        .risk-card .score.medium { color: #d9f99d; }
-        .risk-card .score.low { color: #86efac; }
+    .status { margin-top: 18px; font-size: 14px; min-height: 20px; }
+    .status.error { color: var(--red); }
+    .status.info { color: var(--slate); }
 
-        .risk-card .badges { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
-        .badge.new { background: #7f1d1d; color: #fca5a5; }
-        .badge.modified { background: #78350f; color: #fdba74; }
-        .badge.unchanged { background: #14532d; color: #86efac; }
-        .badge.removed { background: #1f2937; color: #9ca3af; }
-        .badge.level { background: #1e3a5f; color: #93c5fd; }
+    .loading { display: none; text-align: center; padding: 40px; color: var(--slate); }
+    .loading.show { display: block; }
+    .spinner { width: 34px; height: 34px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 14px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-        .risk-card .explanation { background: #0a0e17; border-radius: 8px; padding: 16px; margin-top: 12px; font-size: 14px; line-height: 1.7; color: #d1d5db; }
-        .risk-card .explanation strong { color: #fbbf24; }
+    .results { display: none; margin-top: 28px; }
+    .results.show { display: block; }
 
-        .risk-card .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
-        .signal-item { background: #0a0e17; padding: 8px 12px; border-radius: 6px; font-size: 12px; }
-        .signal-item .name { color: #9ca3af; }
-        .signal-item .val { color: #e2e8f0; font-weight: 600; }
+    .result-head { margin-bottom: 20px; }
+    .result-head .co { font-size: 24px; font-weight: 800; letter-spacing: -0.4px; }
+    .result-head .co .tk { color: var(--accent); }
+    .result-head .years { color: var(--slate); font-size: 14px; margin-top: 4px; }
 
-        .bar { height: 8px; background: #1f2937; border-radius: 4px; margin-top: 10px; overflow: hidden; }
-        .bar-fill { height: 100%; border-radius: 4px; transition: width 1s ease; }
-        .bar-fill.very-high { background: linear-gradient(90deg, #dc2626, #f87171); }
-        .bar-fill.high { background: linear-gradient(90deg, #ea580c, #fb923c); }
-        .bar-fill.medium-high { background: linear-gradient(90deg, #ca8a04, #facc15); }
-        .bar-fill.medium { background: linear-gradient(90deg, #65a30d, #a3e635); }
-        .bar-fill.low { background: linear-gradient(90deg, #16a34a, #4ade80); }
+    .signal { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 26px; box-shadow: var(--shadow); margin-bottom: 22px; }
+    .signal .lbl { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin-bottom: 12px; }
+    .signal .band { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; text-transform: capitalize; margin-bottom: 14px; }
+    .signal .summary { color: #334155; font-size: 15px; line-height: 1.65; }
+    .meter { height: 10px; background: var(--bg-alt); border-radius: 6px; overflow: hidden; margin-bottom: 16px; border: 1px solid var(--line); }
+    .meter .fill { height: 100%; border-radius: 6px; transition: width 0.7s ease; }
 
-        .loading-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(10,14,23,0.85); z-index: 1000; align-items: center; justify-content: center; flex-direction: column; }
-        .loading-overlay.show { display: flex; }
-        .spinner { width: 48px; height: 48px; border: 4px solid #1f2937; border-top-color: #60a5fa; border-radius: 50%; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .loading-text { margin-top: 16px; color: #9ca3af; font-size: 14px; }
+    .band-mild    { color: #15803d; } .fill-mild    { background: linear-gradient(90deg,#4ade80,#22c55e); }
+    .band-moderate{ color: #b45309; } .fill-moderate{ background: linear-gradient(90deg,#fbbf24,#f59e0b); }
+    .band-serious { color: #c2410c; } .fill-serious { background: linear-gradient(90deg,#fb923c,#ea580c); }
+    .band-severe  { color: #dc2626; } .fill-severe  { background: linear-gradient(90deg,#f87171,#dc2626); }
 
-        .footer { text-align: center; padding: 30px; color: #4b5563; font-size: 12px; margin-top: 40px; }
-        @media (max-width: 768px) { .form-row { flex-direction: column; } .signals { grid-template-columns: 1fr; } }
-    </style>
+    .section-label { font-size: 13px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin: 6px 0 14px; }
+
+    .card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; box-shadow: var(--shadow); margin-bottom: 16px; }
+    .card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 12px; }
+    .card .title { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.35; }
+    .card .score { flex-shrink: 0; text-align: right; }
+    .card .score .n { font-size: 24px; font-weight: 800; line-height: 1; }
+    .card .score .of { font-size: 11px; color: var(--slate); }
+    .chip { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; padding: 4px 9px; border-radius: 999px; margin-bottom: 10px; }
+    .chip.new { background: #fef2f2; color: #dc2626; }
+    .chip.rewritten { background: #fff7ed; color: #c2410c; }
+    .chip.removed { background: #f1f5f9; color: #64748b; }
+
+    .tone { margin: 12px 0; }
+    .tone .tone-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--slate); margin-bottom: 5px; }
+    .tone .tone-label { font-weight: 700; text-transform: capitalize; }
+    .tone .caption { font-size: 13.5px; color: #334155; margin-top: 8px; line-height: 1.55; }
+
+    .note { font-size: 13.5px; color: #475569; line-height: 1.6; margin-top: 12px; }
+    .note strong { color: var(--ink); }
+
+    .see-wording { margin-top: 14px; }
+    .see-wording summary { cursor: pointer; color: var(--accent); font-size: 13.5px; font-weight: 600; list-style: none; }
+    .see-wording summary::-webkit-details-marker { display: none; }
+    .see-wording summary::before { content: "\\25B8 "; }
+    .see-wording[open] summary::before { content: "\\25BE "; }
+    .wording-box { margin-top: 12px; padding: 14px 16px; background: var(--bg-alt); border-radius: 10px; font-size: 14px; line-height: 1.8; color: #334155; }
+    .wording-box p { margin-bottom: 8px; }
+    .w-neg { background: #fee2e2; color: #b91c1c; padding: 0 3px; border-radius: 3px; font-weight: 600; }
+    .w-unc { background: #fef3c7; color: #92400e; padding: 0 3px; border-radius: 3px; font-weight: 600; }
+    .legend { margin-top: 10px; font-size: 12px; color: var(--slate); }
+    .legend .w-neg, .legend .w-unc { font-weight: 600; }
+
+    .tone-key { background: var(--accent-soft); border-radius: 12px; padding: 16px 18px; font-size: 13px; color: #1e3a5f; line-height: 1.6; margin-bottom: 22px; }
+    .tone-key b { color: var(--navy); }
+
+    .unchanged { margin-top: 18px; }
+    .unchanged summary { cursor: pointer; color: var(--slate); font-size: 14px; font-weight: 600; }
+    .unchanged ul { margin: 12px 0 0 4px; list-style: none; }
+    .unchanged li { color: var(--slate); font-size: 13px; padding: 4px 0; }
+
+    .foot-note { margin-top: 26px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--slate); line-height: 1.6; text-align: center; }
+
+    @media (max-width: 640px) { .menu { display: none; } .search-row { flex-direction: column; } }
+</style>
 </head>
 <body>
-    <div class="nav">
-        <h1>ERPSA</h1>
-        <div>
+
+<nav class="nav">
+    <div class="nav-inner">
+        <a class="brand" href="/">
+            <svg class="logo" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="14" stroke="#2563eb" stroke-width="2" opacity="0.35"/>
+                <circle cx="16" cy="16" r="8.5" stroke="#2563eb" stroke-width="2" opacity="0.6"/>
+                <circle cx="16" cy="16" r="2.6" fill="#dc2626"/>
+                <line x1="16" y1="16" x2="27" y2="6.5" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <h1>S&amp;P 500 <span>Risk Radar</span></h1>
+        </a>
+        <div class="menu">
             <a href="/">Home</a>
             <a href="/analyze">Analyze</a>
+            <a href="/#learning">Learning</a>
+            <a href="/#research">Research</a>
+            <a href="/#about">About</a>
+        </div>
+        <div class="nav-actions">
+            <button class="signin-btn" disabled title="Coming soon">Sign In</button>
         </div>
     </div>
+</nav>
 
-    <div class="container">
-        <h2>Risk Factor Analysis</h2>
-        <p class="subtitle">Enter a stock ticker and select years to compare their 10-K risk factor disclosures.</p>
-
-        <div class="input-section">
-            <h3>Step 1: Look Up Company</h3>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Stock Ticker</label>
-                    <input type="text" id="ticker" placeholder="e.g. TGT, AAPL, TSLA" style="width:160px;" value="">
-                </div>
-                <button class="btn btn-blue" onclick="lookupCompany()">Look Up</button>
-            </div>
-            <div class="status" id="lookup-status"></div>
+<div class="container">
+    <div class="search">
+        <h2>Analyze a company's risk</h2>
+        <p>Enter an S&amp;P 500 ticker. We compare its two most recent annual filings.</p>
+        <div class="search-row">
+            <input type="text" id="ticker" placeholder="e.g. AMZN" autocomplete="off" spellcheck="false">
+            <button id="go-btn" onclick="analyze()">Analyze</button>
         </div>
-
-        <div class="input-section" id="year-section" style="display:none;">
-            <h3>Step 2: Select Years to Compare</h3>
-            <div id="company-info" style="margin-bottom:16px;color:#9ca3af;font-size:14px;"></div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Current Year (newer)</label>
-                    <select id="year-current"></select>
-                </div>
-                <div class="form-group">
-                    <label>Prior Year (older)</label>
-                    <select id="year-prior"></select>
-                </div>
-                <button class="btn btn-green" onclick="runAnalysis()">Analyze Risks</button>
-            </div>
-            <div class="status" id="analysis-status"></div>
-        </div>
-
-        <div class="results" id="results"></div>
+        <div class="hint">Covers S&amp;P 500 companies as of 30 August 2026.</div>
+        <div class="status" id="status"></div>
     </div>
 
-    <div class="loading-overlay" id="loading">
+    <div class="loading" id="loading">
         <div class="spinner"></div>
-        <div class="loading-text" id="loading-text">Fetching filings from SEC EDGAR...</div>
+        <div id="loading-text">Reading the filings and comparing the risk language...</div>
     </div>
 
-    <div class="footer">
-        ERPSA v1.0 | Data: SEC EDGAR (free, public) | Not investment advice
-    </div>
+    <div class="results" id="results"></div>
+</div>
 
-    <script>
-        let companyData = null;
+<script>
+    var tickerEl = document.getElementById('ticker');
+    var statusEl = document.getElementById('status');
+    var loadingEl = document.getElementById('loading');
+    var resultsEl = document.getElementById('results');
+    var goBtn = document.getElementById('go-btn');
 
-        async function lookupCompany() {
-            const ticker = document.getElementById('ticker').value.trim().toUpperCase();
-            if (!ticker) { setStatus('lookup-status', 'Please enter a ticker symbol.', 'error'); return; }
+    tickerEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') analyze(); });
 
-            setStatus('lookup-status', 'Looking up ' + ticker + ' on SEC EDGAR...', '');
-            document.getElementById('year-section').style.display = 'none';
-            document.getElementById('results').classList.remove('show');
+    function setStatus(msg, cls) {
+        statusEl.textContent = msg || '';
+        statusEl.className = 'status ' + (cls || '');
+    }
 
-            try {
-                const resp = await fetch('/api/lookup?ticker=' + encodeURIComponent(ticker));
-                const data = await resp.json();
-                if (data.error) { setStatus('lookup-status', data.error, 'error'); return; }
+    async function analyze() {
+        var ticker = (tickerEl.value || '').trim().toUpperCase();
+        if (!ticker) { setStatus('Please enter a ticker.', 'error'); return; }
 
-                companyData = data;
-                setStatus('lookup-status', 'Found: ' + data.company + ' (CIK: ' + data.cik + ')', 'success');
+        setStatus('');
+        resultsEl.classList.remove('show');
+        resultsEl.innerHTML = '';
+        loadingEl.classList.add('show');
+        goBtn.disabled = true;
 
-                // Populate year dropdowns
-                const years = data.years;
-                const selCurrent = document.getElementById('year-current');
-                const selPrior = document.getElementById('year-prior');
-                selCurrent.innerHTML = '';
-                selPrior.innerHTML = '';
+        try {
+            var resp = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ticker: ticker })
+            });
+            var data = await resp.json();
+            loadingEl.classList.remove('show');
+            goBtn.disabled = false;
 
-                years.forEach((y, i) => {
-                    const opt1 = new Option(y.year + ' (' + y.date + ')', i);
-                    const opt2 = new Option(y.year + ' (' + y.date + ')', i);
-                    selCurrent.add(opt1);
-                    selPrior.add(opt2);
-                });
-
-                // Default: current = first, prior = second
-                if (years.length >= 2) {
-                    selCurrent.selectedIndex = 0;
-                    selPrior.selectedIndex = 1;
-                }
-
-                document.getElementById('company-info').innerHTML =
-                    '<strong>' + data.company + '</strong> (' + data.ticker + ') — ' + years.length + ' annual filings available';
-                document.getElementById('year-section').style.display = 'block';
-            } catch (err) {
-                setStatus('lookup-status', 'Network error: ' + err.message, 'error');
-            }
-        }
-
-        async function runAnalysis() {
-            if (!companyData) return;
-
-            const currentIdx = parseInt(document.getElementById('year-current').value);
-            const priorIdx = parseInt(document.getElementById('year-prior').value);
-
-            if (currentIdx === priorIdx) {
-                setStatus('analysis-status', 'Please select two different years.', 'error');
+            if (data.error) {
+                setStatus(data.message || 'Something went wrong.', 'error');
                 return;
             }
+            render(data);
+        } catch (err) {
+            loadingEl.classList.remove('show');
+            goBtn.disabled = false;
+            setStatus('Could not reach the server. Please try again.', 'error');
+        }
+    }
 
-            showLoading('Fetching 10-K filings from SEC EDGAR... (this may take 10-30 seconds)');
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
 
-            try {
-                const resp = await fetch('/api/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        ticker: companyData.ticker,
-                        company: companyData.company,
-                        cik: companyData.cik,
-                        current_filing: companyData.filings[currentIdx],
-                        prior_filing: companyData.filings[priorIdx],
-                    }),
-                });
-                const data = await resp.json();
-                hideLoading();
+    function render(data) {
+        var band = data.headline.band;
+        var html = '';
 
-                if (data.error) {
-                    setStatus('analysis-status', data.error, 'error');
-                    return;
-                }
+        html += '<div class="result-head">';
+        html += '  <div class="co"><span class="tk">' + esc(data.ticker) + '</span> &mdash; ' + esc(data.company) + '</div>';
+        html += '  <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div>';
+        html += '</div>';
 
-                setStatus('analysis-status', 'Analysis complete!', 'success');
-                displayResults(data);
-            } catch (err) {
-                hideLoading();
-                setStatus('analysis-status', 'Error: ' + err.message, 'error');
-            }
+        // Signal panel
+        html += '<div class="signal">';
+        html += '  <div class="lbl">Risk signal</div>';
+        html += '  <div class="band band-' + band + '">' + band + '</div>';
+        html += '  <div class="meter"><div class="fill fill-' + band + '" style="width:' + data.headline.score + '%"></div></div>';
+        html += '  <div class="summary">' + esc(data.headline.summary) + '</div>';
+        html += '</div>';
+
+        // Tone key
+        html += '<div class="tone-key">';
+        html += '  <b>How to read tone.</b> Negative words describe harm, decline, or failure (adverse, impair, loss). ';
+        html += '  Uncertainty words are hedging language a company uses when it is unsure (may, could, uncertain). ';
+        html += '  More of these, especially more than last year, means the tone is darkening. That is the warning the research points to.';
+        html += '</div>';
+
+        if (data.risks.length) {
+            html += '<div class="section-label">What changed this year</div>';
+            data.risks.forEach(function(r) { html += renderCard(r); });
+        } else {
+            html += '<div class="card"><div class="note">No changed risks were detected between these two years. Most of the filing is unchanged.</div></div>';
         }
 
-        function displayResults(data) {
-            const container = document.getElementById('results');
-            const risks = data.risks || [];
-
-            const high = risks.filter(r => r.probability >= 50);
-            const med = risks.filter(r => r.probability >= 20 && r.probability < 50);
-            const low = risks.filter(r => r.probability < 20 && r.status !== 'UNCHANGED');
-            const unchanged = risks.filter(r => r.status === 'UNCHANGED');
-
-            let html = `
-                <div class="results-header">
-                    <h3>${data.ticker} — Risk Analysis (FY${data.current_year} vs FY${data.prior_year})</h3>
-                    <div class="stats-row">
-                        <div class="stat-box"><div class="value">${risks.length}</div><div class="label">Risks Found</div></div>
-                        <div class="stat-box"><div class="value" style="color:#fca5a5">${high.length}</div><div class="label">High Priority</div></div>
-                        <div class="stat-box"><div class="value" style="color:#fdba74">${med.length}</div><div class="label">Moderate</div></div>
-                        <div class="stat-box"><div class="value" style="color:#86efac">${unchanged.length}</div><div class="label">Unchanged</div></div>
-                    </div>
-                </div>
-            `;
-
-            // Recommendation Signal
-            if (data.recommendation) {
-                html += renderRecommendation(data.recommendation, data.zacks);
-            }
-
-            const allSorted = risks.filter(r => r.status !== 'UNCHANGED').sort((a,b) => b.probability - a.probability);
-            allSorted.forEach(r => { html += renderRisk(r); });
-
-            // Stock Analysis Section
-            if (data.stock_analysis) {
-                html += renderStockAnalysis(data.stock_analysis);
-            }
-
-            if (unchanged.length > 0) {
-                html += '<div style="margin-top:20px;padding:16px;background:#111827;border-radius:12px;border:1px solid #1f2937;">';
-                html += '<h4 style="color:#22c55e;margin-bottom:8px;">Unchanged Risks (Boilerplate — No Signal)</h4>';
-                html += '<p style="color:#9ca3af;font-size:13px;margin-bottom:12px;">These risks use the exact same language as last year. No change = no danger signal.</p>';
-                unchanged.forEach(r => {
-                    html += '<div style="padding:6px 0;font-size:13px;color:#6b7280;">• ' + r.title + '</div>';
-                });
-                html += '</div>';
-            }
-
-            container.innerHTML = html;
-            container.classList.add('show');
-            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Unchanged
+        if (data.unchanged_titles && data.unchanged_titles.length) {
+            html += '<details class="unchanged"><summary>' + data.unchanged_titles.length + ' risks unchanged from last year (no signal)</summary><ul>';
+            data.unchanged_titles.forEach(function(t) { html += '<li>' + esc(t) + '</li>'; });
+            html += '</ul></details>';
         }
 
-        function renderRecommendation(rec, zacks) {
-            if (!rec || !rec.signal) return '';
+        html += '<div class="foot-note">An observation, not a prediction. We explore whether the patterns academic research describes show up in real companies. This looks only at the risk wording. A company\\'s financial numbers are a separate lens we plan to add. Not investment advice.</div>';
 
-            const bgColor = rec.signal === 'STRONG BUY' ? '#052e16' :
-                            rec.signal === 'BUY' ? '#052e16' :
-                            rec.signal === 'HOLD' ? '#422006' :
-                            rec.signal === 'SELL' ? '#431407' : '#450a0a';
-            const borderColor = rec.color;
+        resultsEl.innerHTML = html;
+        resultsEl.classList.add('show');
+        resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 
-            // Zacks section
-            let zacksHtml = '';
-            if (zacks && zacks.available) {
-                zacksHtml = `
-                    <div style="background:rgba(0,0,0,0.3);border-radius:8px;padding:16px;margin-top:16px;border:1px solid #374151;">
-                        <div style="display:flex;justify-content:space-between;align-items:center;">
-                            <div>
-                                <div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Zacks Rank (Wall Street Analysts)</div>
-                                <div style="font-size:24px;font-weight:700;color:${zacks.color};margin-top:4px;">#${zacks.rank} — ${zacks.signal}</div>
-                            </div>
-                            <div style="text-align:right;">
-                                <div style="font-size:11px;color:#6b7280;">Based on earnings estimate<br>revisions by analysts</div>
-                            </div>
-                        </div>
-                        <p style="color:#9ca3af;font-size:12px;margin-top:8px;">
-                            <strong style="color:#e2e8f0;">What is Zacks Rank?</strong>
-                            Zacks tracks how Wall Street analysts change their earnings estimates.
-                            When analysts raise their estimates, Zacks considers that bullish (Strong Buy).
-                            When they cut estimates, it's bearish (Strong Sell).
-                            It's based on 4 factors: Agreement (are analysts moving in the same direction?),
-                            Magnitude (how big are the changes?), Upside (most accurate estimate vs consensus),
-                            and Surprise (recent earnings beat/miss history).
-                        </p>
-                    </div>
-                `;
-            } else if (zacks && !zacks.available) {
-                zacksHtml = `
-                    <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;margin-top:16px;">
-                        <span style="color:#6b7280;font-size:12px;">Zacks Rank: Not available (${zacks.reason || 'could not fetch'})</span>
-                    </div>
-                `;
-            }
+    function renderCard(r) {
+        var chipClass = r.status === 'NEW' ? 'new' : (r.status === 'MODIFIED' ? 'rewritten' : 'removed');
+        var toneBand = r.tone_label;
+        var h = '<div class="card">';
+        h += '  <div class="top">';
+        h += '    <div><span class="chip ' + chipClass + '">' + esc(r.status_label) + '</span><div class="title">' + esc(r.title) + '</div></div>';
+        h += '    <div class="score"><div class="n band-' + toneBand + '">' + r.score + '</div><div class="of">out of 100</div></div>';
+        h += '  </div>';
 
-            return `
-                <div style="background:${bgColor};border:2px solid ${borderColor};border-radius:12px;padding:28px;margin-bottom:24px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
-                        <div>
-                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">ERPSA Signal (Text + Financials)</div>
-                            <div style="font-size:36px;font-weight:800;color:${rec.color};letter-spacing:-1px;">${rec.emoji} ${rec.signal}</div>
-                        </div>
-                        <div style="text-align:right;">
-                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Conviction Score</div>
-                            <div style="font-size:42px;font-weight:700;color:${rec.color};">${rec.score}</div>
-                            <div style="font-size:11px;color:#6b7280;">out of 100</div>
-                        </div>
-                    </div>
-                    <div style="margin-top:16px;padding:14px;background:rgba(0,0,0,0.3);border-radius:8px;">
-                        <p style="color:#d1d5db;font-size:14px;line-height:1.7;">${rec.explanation}</p>
-                    </div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px;">
-                        <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;text-align:center;">
-                            <div style="font-size:11px;color:#9ca3af;">Financial Health</div>
-                            <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.financial_points.toFixed(0)}/50</div>
-                        </div>
-                        <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;text-align:center;">
-                            <div style="font-size:11px;color:#9ca3af;">Risk Safety</div>
-                            <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.risk_points.toFixed(0)}/50</div>
-                        </div>
-                        <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;text-align:center;">
-                            <div style="font-size:11px;color:#9ca3af;">Avg Risk Level</div>
-                            <div style="font-size:16px;font-weight:600;color:#e2e8f0;">${rec.components.avg_risk_probability.toFixed(0)}%</div>
-                        </div>
-                    </div>
-                    ${zacksHtml}
-                    <div style="margin-top:12px;font-size:11px;color:#6b7280;text-align:center;">
-                        This is a research signal based on textual analysis + financial data. Not investment advice. Always do your own due diligence.
-                    </div>
-                </div>
-            `;
+        // Tone bar
+        h += '  <div class="tone">';
+        h += '    <div class="tone-top"><span>Tone of the wording</span><span class="tone-label band-' + toneBand + '">' + toneBand + '</span></div>';
+        h += '    <div class="meter"><div class="fill fill-' + toneBand + '" style="width:' + r.tone_score + '%"></div></div>';
+        h += '    <div class="caption">' + esc(r.tone_caption) + '</div>';
+        h += '  </div>';
+
+        if (r.note) { h += '  <div class="note">' + r.note + '</div>'; }
+
+        if (r.wording && r.wording.length) {
+            h += '  <details class="see-wording"><summary>See the wording</summary>';
+            h += '    <div class="wording-box">';
+            r.wording.forEach(function(w) { h += '<p>' + w + '</p>'; });
+            h += '      <div class="legend"><span class="w-neg">negative words</span> &nbsp; <span class="w-unc">uncertainty words</span></div>';
+            h += '    </div>';
+            h += '  </details>';
         }
 
-        function renderStockAnalysis(sa) {
-            if (!sa || !sa.metrics || sa.metrics.length === 0) return '';
-
-            const healthColor = sa.health_score >= 75 ? '#34d399' :
-                                sa.health_score >= 55 ? '#60a5fa' :
-                                sa.health_score >= 35 ? '#fbbf24' : '#f87171';
-
-            let html = `
-                <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:28px;margin-top:30px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-                        <h3 style="color:#60a5fa;font-size:20px;">Stock Analysis: ${sa.ticker}</h3>
-                        <div style="text-align:right;">
-                            <div style="font-size:36px;font-weight:700;color:${healthColor};">${sa.health_score}/100</div>
-                            <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;">${sa.health_label} Financial Health</div>
-                        </div>
-                    </div>
-                    <p style="color:#d1d5db;font-size:14px;line-height:1.6;margin-bottom:20px;">${sa.summary}</p>
-
-                    <h4 style="color:#e2e8f0;margin-bottom:12px;font-size:15px;">Key Financial Metrics</h4>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:24px;">
-            `;
-
-            sa.metrics.forEach(m => {
-                const trendIcon = m.trend === 'up' ? '<span style="color:#34d399">&#9650;</span>' :
-                                  m.trend === 'down' ? '<span style="color:#f87171">&#9660;</span>' :
-                                  '<span style="color:#9ca3af">&#9654;</span>';
-                const changeHtml = m.change ? `<span style="color:${m.change.startsWith('+') ? '#34d399' : '#f87171'};font-size:12px;"> ${m.change}</span>` : '';
-                html += `
-                    <div style="background:#0a0e17;border-radius:8px;padding:14px;">
-                        <div style="font-size:11px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">${m.name}</div>
-                        <div style="font-size:18px;font-weight:600;">${trendIcon} ${m.value}${changeHtml}</div>
-                    </div>
-                `;
-            });
-
-            html += '</div>';
-
-            // Strengths
-            if (sa.strengths && sa.strengths.length > 0) {
-                html += '<h4 style="color:#34d399;margin-bottom:8px;font-size:14px;">Strengths</h4><ul style="margin-bottom:16px;padding-left:20px;">';
-                sa.strengths.forEach(s => { html += `<li style="color:#d1d5db;font-size:13px;margin-bottom:4px;">${s}</li>`; });
-                html += '</ul>';
-            }
-
-            // Concerns
-            if (sa.concerns && sa.concerns.length > 0) {
-                html += '<h4 style="color:#f87171;margin-bottom:8px;font-size:14px;">Concerns</h4><ul style="margin-bottom:16px;padding-left:20px;">';
-                sa.concerns.forEach(c => { html += `<li style="color:#d1d5db;font-size:13px;margin-bottom:4px;">${c}</li>`; });
-                html += '</ul>';
-            }
-
-            // Trends
-            if (sa.trend_analysis && sa.trend_analysis.length > 0) {
-                html += '<h4 style="color:#fbbf24;margin-bottom:8px;font-size:14px;">Multi-Year Trends</h4><ul style="margin-bottom:16px;padding-left:20px;">';
-                sa.trend_analysis.forEach(t => { html += `<li style="color:#d1d5db;font-size:13px;margin-bottom:4px;">${t}</li>`; });
-                html += '</ul>';
-            }
-
-            // Context note
-            html += `
-                <div style="margin-top:16px;padding:12px;background:#0a0e17;border-radius:8px;border-left:3px solid #374151;">
-                    <p style="color:#9ca3af;font-size:12px;line-height:1.6;">
-                        <strong style="color:#e2e8f0;">How to read this together with the Risk Analysis above:</strong>
-                        If the risk scores above are HIGH and the financial health here is DECLINING — that's the most dangerous combination.
-                        It means the company is both warning you about new threats AND their numbers are already weakening.
-                        If risk scores are high but financials are strong, the company may be proactively disclosing risks before they impact results (less immediately dangerous).
-                    </p>
-                </div>
-            `;
-
-            html += '</div>';
-            return html;
-        }
-
-        function renderRisk(risk) {
-            const level = risk.probability >= 70 ? 'very-high' :
-                          risk.probability >= 50 ? 'high' :
-                          risk.probability >= 35 ? 'medium-high' :
-                          risk.probability >= 20 ? 'medium' : 'low';
-            return `
-                <div class="risk-card ${level}">
-                    <div class="top-row">
-                        <div class="title">${risk.title}</div>
-                        <div class="score ${level}">${risk.probability}%</div>
-                    </div>
-                    <div class="badges">
-                        <span class="badge ${risk.status.toLowerCase()}">${risk.status}</span>
-                        <span class="badge level">${risk.level}</span>
-                    </div>
-                    <div class="bar"><div class="bar-fill ${level}" style="width:${risk.probability}%"></div></div>
-                    <div class="explanation">${risk.explanation}</div>
-                    <div class="signals">
-                        <div class="signal-item"><span class="name">Signal 1 (Text Changed):</span> <span class="val">${(risk.textual_score * 100).toFixed(0)}%</span></div>
-                        <div class="signal-item"><span class="name">Signal 2 (Negative Tone):</span> <span class="val">${(risk.sentiment_score * 100).toFixed(0)}%</span></div>
-                    </div>
-                </div>
-            `;
-        }
-
-        function setStatus(id, msg, cls) {
-            const el = document.getElementById(id);
-            el.textContent = msg;
-            el.className = 'status ' + (cls || '');
-        }
-        function showLoading(msg) { document.getElementById('loading-text').textContent = msg; document.getElementById('loading').classList.add('show'); }
-        function hideLoading() { document.getElementById('loading').classList.remove('show'); }
-
-        // Allow Enter key on ticker input
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('ticker').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') lookupCompany();
-            });
-        });
-    </script>
+        h += '</div>';
+        return h;
+    }
+</script>
 </body>
 </html>"""
 
@@ -1692,124 +2415,150 @@ class ERPSAHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode('utf-8'))
 
     def _handle_lookup(self, parsed):
-        """Handle ticker lookup — returns available years."""
+        """
+        Ticker-only lookup. Given just a ticker, discover the two most recent
+        filing years available in S3 and return them for display. Falls back to
+        live SEC EDGAR only if the ticker is not present in S3 at all.
+        """
         params = parse_qs(parsed.query)
-        ticker = params.get('ticker', [''])[0].strip()
+        ticker = params.get('ticker', [''])[0].strip().upper()
         if not ticker:
             self._serve_json({'error': 'No ticker provided'})
             return
 
-        print(f"  [LOOKUP] Looking up ticker: {ticker}")
-        result = get_available_years(ticker)
-        self._serve_json(result)
+        print(f"  [LOOKUP] Ticker: {ticker}")
+
+        # Primary path: what do we have in S3?
+        s3_years = list_s3_years_for_ticker(ticker)
+        if s3_years:
+            latest = s3_years[0]
+            prior = s3_years[1] if len(s3_years) > 1 else None
+            company = get_company_name_from_s3(ticker, latest)
+            result = {
+                'ticker': ticker,
+                'company': company,
+                'source': 's3',
+                'available_years': s3_years,
+                'latest_year': latest,
+                'prior_year': prior,
+                'can_compare': prior is not None,
+            }
+            if prior is None:
+                result['message'] = (
+                    f"We only have one year of filings for {ticker} so far "
+                    f"({latest}). A year over year comparison needs two."
+                )
+            self._serve_json(result)
+            return
+
+        # Fallback: not in S3 yet, tell the user (avoid slow live path by default).
+        self._serve_json({
+            'ticker': ticker,
+            'company': ticker,
+            'source': 'none',
+            'available_years': [],
+            'latest_year': None,
+            'prior_year': None,
+            'can_compare': False,
+            'message': f"We do not have filings for {ticker} yet.",
+        })
 
     def _handle_analyze(self):
-        """Handle full analysis request."""
+        """
+        Ticker-only analysis. Reads the two most recent years for the ticker
+        from S3, runs the risk pipeline live, and returns the Option A payload
+        (headline band + per-risk cards with tone bars and highlighted wording).
+        No Zacks, no buy/sell recommendation. Numbers lens comes later.
+        """
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8')
 
         try:
             data = json.loads(body)
-            ticker = data.get('ticker', 'UNKNOWN')
-            current_filing = data.get('current_filing', {})
-            prior_filing = data.get('prior_filing', {})
+            ticker = str(data.get('ticker', '')).strip().upper()
+            if not ticker:
+                self._serve_json({'error': 'No ticker provided.'})
+                return
 
-            print(f"  [ANALYZE] Running analysis for {ticker}")
-            print(f"    Current: {current_filing.get('date', '?')}")
-            print(f"    Prior: {prior_filing.get('date', '?')}")
+            print(f"  [ANALYZE] {ticker}: discovering years in S3...")
+            years = list_s3_years_for_ticker(ticker)
 
-            # Fetch filings
-            print(f"  [ANALYZE] Fetching current year filing...")
-            current_text = fetch_filing_text(current_filing, ticker)
-            time.sleep(0.5)  # SEC rate limiting courtesy
-
-            print(f"  [ANALYZE] Fetching prior year filing...")
-            prior_text = fetch_filing_text(prior_filing, ticker)
-
-            if current_text.startswith('[') or prior_text.startswith('['):
+            if not years:
                 self._serve_json({
-                    'error': f'Could not extract risk factors. '
-                             f'Current: {"OK" if not current_text.startswith("[") else current_text[:100]}. '
-                             f'Prior: {"OK" if not prior_text.startswith("[") else prior_text[:100]}.'
+                    'error': 'not_in_list',
+                    'message': (
+                        f"We do not have {ticker} in our data. This tool covers "
+                        f"S&P 500 companies as of 30 August 2026 only."
+                    ),
                 })
                 return
 
-            # Run pipeline
-            print(f"  [ANALYZE] Running scoring pipeline...")
+            if len(years) < 2:
+                self._serve_json({
+                    'error': 'one_year_only',
+                    'message': (
+                        f"We only have one year of filings for {ticker} so far "
+                        f"({years[0]}). A year over year comparison needs two."
+                    ),
+                })
+                return
+
+            current_year, prior_year = years[0], years[1]
+            company = get_company_name_from_s3(ticker, current_year)
+            print(f"  [ANALYZE] {ticker}: comparing {current_year} vs {prior_year}")
+
+            current_text = read_s3_risk_text(ticker, current_year)
+            prior_text = read_s3_risk_text(ticker, prior_year)
+            if not current_text or not prior_text:
+                self._serve_json({
+                    'error': 'read_failed',
+                    'message': f"We could not read the stored filings for {ticker}. Please try again.",
+                })
+                return
+
+            # ─── Run the risk pipeline (live) ───
             clean_current = clean_text_preserve_structure(current_text)
             clean_prior = clean_text_preserve_structure(prior_text)
-
             sections_current = parse_risk_sections(clean_current)
             sections_prior = parse_risk_sections(clean_prior)
-
-            print(f"    Parsed: {len(sections_current)} current sections, {len(sections_prior)} prior sections")
-
             matches = match_risk_categories(sections_current, sections_prior)
             change_report = classify_risk_changes(
-                matches=matches,
-                ticker=ticker,
-                current_year=current_filing.get('year', 0),
-                prior_year=prior_filing.get('year', 0),
+                matches=matches, ticker=ticker,
+                current_year=current_year, prior_year=prior_year,
                 total_current=len(sections_current),
                 total_prior=len(sections_prior),
             )
-
             scoring = run_scoring(change_report, verbose=False)
 
-            # Build response with explanations
-            risks = []
+            # ─── Serialize into Option A shape ───
+            changed, unchanged = [], []
             for i, r in enumerate(scoring.risk_scores):
                 classification = change_report.classifications[i] if i < len(change_report.classifications) else None
-                explanation = generate_risk_explanation(r, classification) if classification else ""
+                card = serialize_risk(r, classification)
+                if r.status == RiskChangeStatus.UNCHANGED:
+                    unchanged.append(card['title'])
+                else:
+                    changed.append(card)
 
-                risks.append({
-                    'title': r.title[:120],
-                    'status': r.status.value,
-                    'probability': round(r.preliminary_probability, 1),
-                    'level': r.risk_level_label,
-                    'textual_score': round(r.textual_change_score, 3),
-                    'sentiment_score': round(r.sentiment_score, 3),
-                    'explanation': explanation,
-                })
-
-            risks.sort(key=lambda x: x['probability'], reverse=True)
-
-            # ─── Stock Analysis ───
-            print(f"  [ANALYZE] Fetching financial data for stock analysis...")
-            cik = data.get('cik', '')
-            financials = fetch_company_financials(cik, ticker) if cik else {}
-            stock_analysis = generate_stock_analysis(
-                financials, ticker,
-                data.get('company', ticker),
-                current_filing.get('year', 0)
-            )
-
-            # ─── Recommendation ───
-            recommendation = compute_recommendation(stock_analysis, risks)
-
-            # ─── Zacks Rank ───
-            print(f"  [ANALYZE] Fetching Zacks Rank...")
-            zacks_data = fetch_zacks_rank(ticker)
+            changed.sort(key=lambda c: c['score'], reverse=True)
+            headline = build_headline(scoring, current_year, prior_year)
 
             result = {
                 'ticker': ticker,
-                'current_year': current_filing.get('year', 0),
-                'prior_year': prior_filing.get('year', 0),
-                'risks': risks,
-                'total_current': len(sections_current),
-                'total_prior': len(sections_prior),
-                'stock_analysis': stock_analysis,
-                'recommendation': recommendation,
-                'zacks': zacks_data,
+                'company': company,
+                'current_year': current_year,
+                'prior_year': prior_year,
+                'headline': headline,
+                'risks': changed,
+                'unchanged_titles': unchanged,
             }
-
-            print(f"  [ANALYZE] Complete. {len(risks)} risks scored.")
+            print(f"  [ANALYZE] {ticker}: done, {len(changed)} changed risks, {len(unchanged)} unchanged.")
             self._serve_json(result)
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self._serve_json({'error': f'Analysis error: {str(e)}'})
+            self._serve_json({'error': 'server_error', 'message': f'Analysis error: {str(e)}'})
 
     def log_message(self, format, *args):
         """Custom log format."""
@@ -1826,22 +2575,15 @@ def main():
 
     import webbrowser
     print(f"""
-╔══════════════════════════════════════════════════════════════════╗
-║  ERPSA — Equity Risk Predictor & Sentiment Analyzer            ║
-║  Version 1.0                                                   ║
-╠══════════════════════════════════════════════════════════════════╣
-║                                                                ║
-║  Server running at: http://localhost:{port}                      ║
-║                                                                ║
-║  How to use:                                                   ║
-║    1. Enter a stock ticker (AAPL, TGT, TSLA, etc.)             ║
-║    2. Click "Look Up" to fetch available filing years           ║
-║    3. Select two years and click "Analyze Risks"               ║
-║    4. Review scored risks with plain-English explanations       ║
-║                                                                ║
-║  Data source: SEC EDGAR (free, public, no API key needed)      ║
-║  Press Ctrl+C to stop                                          ║
-╚══════════════════════════════════════════════════════════════════╝
+S&P 500 Risk Radar
+Server running at: http://localhost:{port}
+
+  1. Open the site and go to Analyze.
+  2. Enter an S&P 500 ticker (for example AMZN).
+  3. We read the two most recent filings from S3 and compare the risk language.
+
+  Risk text is read from S3 (bucket: {RISK_S3_BUCKET}, region: {AWS_REGION}).
+  Press Ctrl+C to stop.
 """)
     # Only auto-open browser when running locally (not on cloud servers)
     if not os.environ.get('RENDER') and not os.environ.get('PORT'):
