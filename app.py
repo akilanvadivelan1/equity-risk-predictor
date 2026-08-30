@@ -111,6 +111,8 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 # In-memory caches so we hit S3 at most once per ticker/year.
 _s3_manifest_cache: Optional[Dict] = None
 _s3_year_cache: Dict[str, List[int]] = {}
+_companies_cache: Optional[List[Dict]] = None
+_sec_name_map_cache: Optional[Dict[str, str]] = None
 
 
 def _get_s3_client():
@@ -208,6 +210,81 @@ def get_company_name_from_s3(ticker: str, year: int) -> str:
     except Exception:
         pass
     return ticker.upper()
+
+
+def _load_manifest() -> Optional[Dict]:
+    """Load and cache the bucket's manifest.json (list of stored filings)."""
+    global _s3_manifest_cache
+    if _s3_manifest_cache is not None:
+        return _s3_manifest_cache
+    s3 = _get_s3_client()
+    if s3 is None:
+        return None
+    try:
+        obj = s3.get_object(Bucket=RISK_S3_BUCKET, Key='manifest.json')
+        _s3_manifest_cache = json.loads(obj['Body'].read().decode('utf-8', errors='ignore'))
+    except Exception as e:
+        print(f"  [S3] Could not load manifest.json: {e}")
+        _s3_manifest_cache = None
+    return _s3_manifest_cache
+
+
+def _sec_name_map() -> Dict[str, str]:
+    """Fetch and cache a ticker -> company name map from SEC's public file."""
+    global _sec_name_map_cache
+    if _sec_name_map_cache is not None:
+        return _sec_name_map_cache
+    mapping: Dict[str, str] = {}
+    try:
+        url = 'https://www.sec.gov/files/company_tickers.json'
+        req = urllib.request.Request(url, headers=SEC_HEADERS)
+        resp = urllib.request.urlopen(req, timeout=20)
+        data = json.loads(resp.read().decode())
+        for entry in data.values():
+            t = str(entry.get('ticker', '')).upper()
+            name = entry.get('title', '')
+            if t and name:
+                mapping[t] = name.title() if name.isupper() else name
+    except Exception as e:
+        print(f"  [SEC] Could not fetch company name map: {e}")
+    _sec_name_map_cache = mapping
+    return mapping
+
+
+def list_companies() -> List[Dict]:
+    """
+    Build the list of {ticker, name} the app can analyze. Tickers come from the
+    S3 manifest (companies that have at least two years stored); names come from
+    SEC's ticker mapping. Cached in memory after the first build.
+    """
+    global _companies_cache
+    if _companies_cache is not None:
+        return _companies_cache
+
+    manifest = _load_manifest()
+    if not manifest or not manifest.get('filings'):
+        _companies_cache = []
+        return _companies_cache
+
+    # Count years per ticker from the "TICKER:YEAR" keys.
+    years_by_ticker: Dict[str, set] = {}
+    for entry in manifest['filings']:
+        key = entry.get('key', '')
+        if ':' not in key:
+            continue
+        t, y = key.split(':', 1)
+        years_by_ticker.setdefault(t.upper(), set()).add(y)
+
+    names = _sec_name_map()
+    companies = []
+    for t, yrs in years_by_ticker.items():
+        if len(yrs) >= 2:   # only companies we can actually compare
+            companies.append({'ticker': t, 'name': names.get(t, t)})
+
+    companies.sort(key=lambda c: c['ticker'])
+    _companies_cache = companies
+    print(f"  [COMPANIES] Built list of {len(companies)} companies for autocomplete.")
+    return companies
 
 
 def _check_database(ticker: str, year: int) -> Optional[str]:
@@ -2116,6 +2193,14 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .search-row button { padding: 13px 26px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; }
     .search-row button:hover { background: #1d4fd7; }
     .search-row button:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .ac-wrap { position: relative; flex: 1; text-align: left; }
+    .ac-wrap input { width: 100%; }
+    .ac-list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); max-height: 280px; overflow-y: auto; z-index: 20; display: none; }
+    .ac-list.show { display: block; }
+    .ac-item { padding: 10px 14px; cursor: pointer; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .ac-item:hover, .ac-item.active { background: var(--accent-soft); }
+    .ac-item .nm { color: var(--ink); }
+    .ac-item .tk { color: var(--slate); font-weight: 700; font-size: 12.5px; }
     .hint { margin-top: 14px; font-size: 13px; color: var(--slate); }
 
     .status { margin-top: 18px; font-size: 14px; min-height: 20px; }
@@ -2222,12 +2307,15 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 <div class="container">
     <div class="search">
         <h2>Analyze a company's risk</h2>
-        <p>Enter an S&amp;P 500 ticker. We compare its two most recent annual filings.</p>
+        <p>Search by company name or ticker. We compare its two most recent annual filings.</p>
         <div class="search-row">
-            <input type="text" id="ticker" placeholder="e.g. AMZN" autocomplete="off" spellcheck="false">
+            <div class="ac-wrap">
+                <input type="text" id="ticker" placeholder="Search Apple, AMZN, Target..." autocomplete="off" spellcheck="false">
+                <div class="ac-list" id="ac-list"></div>
+            </div>
             <button id="go-btn" onclick="analyze()">Analyze</button>
         </div>
-        <div class="hint">Covers S&amp;P 500 companies as of 30 August 2026.</div>
+        <div class="hint">Do not know the ticker? Just start typing the company name. Covers S&amp;P 500 companies as of 30 August 2026.</div>
         <div class="status" id="status"></div>
     </div>
 
@@ -2245,17 +2333,88 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     var loadingEl = document.getElementById('loading');
     var resultsEl = document.getElementById('results');
     var goBtn = document.getElementById('go-btn');
+    var acList = document.getElementById('ac-list');
 
-    tickerEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') analyze(); });
+    var companies = [];       // [{ticker, name}]
+    var selectedTicker = null; // set when a suggestion is chosen
+    var acMatches = [];
+    var acActive = -1;
+
+    // Load the company list for autocomplete (built from S3 + SEC names).
+    fetch('/api/companies')
+        .then(function(r) { return r.json(); })
+        .then(function(d) { companies = d.companies || []; })
+        .catch(function() { /* fall back to plain ticker typing */ });
 
     function setStatus(msg, cls) {
         statusEl.textContent = msg || '';
         statusEl.className = 'status ' + (cls || '');
     }
 
+    function renderAc() {
+        if (!acMatches.length) { acList.classList.remove('show'); acList.innerHTML = ''; return; }
+        var html = '';
+        acMatches.forEach(function(c, i) {
+            html += '<div class="ac-item' + (i === acActive ? ' active' : '') + '" data-ticker="' + c.ticker + '" onmousedown="pickCompany(\\'' + c.ticker + '\\')">'
+                 +  '<span class="nm">' + esc(c.name) + '</span><span class="tk">' + c.ticker + '</span></div>';
+        });
+        acList.innerHTML = html;
+        acList.classList.add('show');
+    }
+
+    function updateAc() {
+        var q = (tickerEl.value || '').trim().toLowerCase();
+        selectedTicker = null;
+        acActive = -1;
+        if (q.length < 1 || !companies.length) { acMatches = []; renderAc(); return; }
+        acMatches = companies.filter(function(c) {
+            return c.ticker.toLowerCase().indexOf(q) === 0 ||
+                   c.name.toLowerCase().indexOf(q) !== -1;
+        }).slice(0, 8);
+        renderAc();
+    }
+
+    function pickCompany(ticker) {
+        var c = companies.find(function(x) { return x.ticker === ticker; });
+        selectedTicker = ticker;
+        tickerEl.value = c ? (c.name + ' (' + c.ticker + ')') : ticker;
+        acMatches = []; renderAc();
+        analyze();
+    }
+
+    tickerEl.addEventListener('input', updateAc);
+    tickerEl.addEventListener('keydown', function(e) {
+        if (!acMatches.length) { if (e.key === 'Enter') analyze(); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); acActive = Math.min(acActive + 1, acMatches.length - 1); renderAc(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); acActive = Math.max(acActive - 1, 0); renderAc(); }
+        else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (acActive >= 0) { pickCompany(acMatches[acActive].ticker); }
+            else { analyze(); }
+        } else if (e.key === 'Escape') { acMatches = []; renderAc(); }
+    });
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.ac-wrap')) { acMatches = []; renderAc(); }
+    });
+
+    function resolveTicker() {
+        if (selectedTicker) return selectedTicker;
+        var raw = (tickerEl.value || '').trim();
+        // If the field holds "Company Name (TICKER)", pull out the ticker.
+        var m = raw.match(/\\(([A-Za-z.\\-]{1,6})\\)\\s*$/);
+        if (m) return m[1].toUpperCase();
+        // Otherwise treat the input as a ticker if it looks like one, else try
+        // to match a company name exactly.
+        var up = raw.toUpperCase();
+        var byName = companies.find(function(c) { return c.name.toLowerCase() === raw.toLowerCase(); });
+        if (byName) return byName.ticker;
+        return up;
+    }
+
     async function analyze() {
-        var ticker = (tickerEl.value || '').trim().toUpperCase();
-        if (!ticker) { setStatus('Please enter a ticker.', 'error'); return; }
+        acMatches = []; renderAc();
+        var ticker = resolveTicker();
+        if (!ticker) { setStatus('Please enter a company name or ticker.', 'error'); return; }
 
         setStatus('');
         resultsEl.classList.remove('show');
@@ -2394,6 +2553,8 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             self._serve_html(ANALYZE_PAGE)
         elif path == '/api/lookup':
             self._handle_lookup(parsed)
+        elif path == '/api/companies':
+            self._serve_json({'companies': list_companies()})
         else:
             self.send_response(404)
             self.end_headers()
