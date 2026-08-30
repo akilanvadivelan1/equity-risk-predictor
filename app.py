@@ -2260,6 +2260,8 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         setStatus('');
         resultsEl.classList.remove('show');
         resultsEl.innerHTML = '';
+        document.getElementById('loading-text').textContent =
+            'Reading ' + ticker + "'s two most recent filings and comparing the risk language. This can take up to half a minute.";
         loadingEl.classList.add('show');
         goBtn.disabled = true;
 
@@ -2333,7 +2335,10 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
         resultsEl.innerHTML = html;
         resultsEl.classList.add('show');
-        resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Scroll so the company header stays in view (offset for the sticky nav),
+        // keeping the user in context rather than jumping to the risk panel.
+        var top = resultsEl.getBoundingClientRect().top + window.pageYOffset - 72;
+        window.scrollTo({ top: top, behavior: 'smooth' });
     }
 
     function renderCard(r) {
