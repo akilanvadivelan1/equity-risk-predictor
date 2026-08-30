@@ -40,8 +40,86 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Reuse the exact extraction logic already used by the app and bulk downloader.
-from app import extract_item_1a
+import re
+from html import unescape
+
+
+def extract_item_1a(html: str) -> str:
+    """
+    Robust Item 1A (Risk Factors) extractor for modern 10-K filings.
+
+    Strategy: convert the HTML to clean plain text FIRST, then locate the
+    section in the clean text. This is far more reliable for inline XBRL
+    (iXBRL) filings like Amazon's, where the words "Item 1A" and "Risk
+    Factors" are separated by many nested tags in the raw HTML.
+
+    Steps:
+      1. Strip scripts, styles, comments, and all tags to plain text.
+      2. Find every "Item 1A ... Risk Factors" heading in the plain text.
+      3. Find the matching end (Item 1B, or Item 2 Properties).
+      4. Pick the longest span (the real section, not the table-of-contents
+         entry, which is short).
+    """
+    # 1. HTML -> plain text
+    text = html
+    text = re.sub(r'<!--.*?-->', ' ', text, flags=re.DOTALL)
+    text = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    # Turn block-level boundaries into spaces so words do not run together
+    text = re.sub(r'<(br|/p|/div|/tr|/td|/th|/li|/h[1-6])[^>]*>', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)          # drop all remaining tags
+    text = unescape(text)                         # decode &amp; &#160; etc.
+    text = text.replace('\u00a0', ' ')            # non breaking space -> space
+    text = re.sub(r'[ \t]+', ' ', text)           # collapse runs of spaces
+    text = re.sub(r'\s{2,}', ' ', text)           # collapse remaining whitespace
+
+    # 2. Start headings: "Item 1A" then (allowing punctuation/space) "Risk Factors"
+    #    In clean text the two are close together even across original tags.
+    start_re = re.compile(r'Item\s*1A[\.\s\u2013\u2014\-:]*\s*Risk\s+Factors', re.IGNORECASE)
+    starts = [m.start() for m in start_re.finditer(text)]
+
+    # Broader fallback: just "Item 1A" if the strict pattern found nothing
+    if not starts:
+        starts = [m.start() for m in re.finditer(r'Item\s*1A\b', text, re.IGNORECASE)]
+
+    if not starts:
+        return ""
+
+    # 3. End headings: Item 1B (Unresolved Staff Comments) or Item 2 (Properties)
+    end_re = re.compile(r'Item\s*1B\b|Item\s*2[\.\s\u2013\u2014\-:]+\s*Propert', re.IGNORECASE)
+
+    # 4. For each start, measure the span to the next end; keep the longest.
+    #    If a start is a table-of-contents entry, a LATER real "Item 1A Risk
+    #    Factors" heading usually appears soon after inside the span, so we
+    #    advance the start to the last such heading before the section end.
+    best_start, best_end, best_len = None, None, 0
+    for s in starts:
+        m = end_re.search(text, s + 50)
+        end = m.start() if m else len(text)
+        span_len = end - s
+        if span_len > best_len:
+            best_len = span_len
+            best_start, best_end = s, end
+
+    if best_start is None:
+        return ""
+
+    # Within the chosen span, if another "Item 1A ... Risk Factors" heading
+    # appears (the real one after a TOC entry), jump to the last occurrence.
+    inner = [m.start() for m in start_re.finditer(text, best_start + 20, best_end)]
+    if inner:
+        best_start = inner[-1]
+
+    span = text[best_start:best_end].strip()
+    # Remove the leading "Item 1A. Risk Factors" heading itself
+    span = re.sub(r'^Item\s*1A[\.\s\u2013\u2014\-:]*\s*Risk\s+Factors\s*',
+                  '', span, count=1, flags=re.IGNORECASE)
+    span = span.strip()
+
+    # Cap enormous sections
+    if len(span) > 200000:
+        span = span[:200000]
+
+    return span.strip()
 
 
 # --- Defaults (locked in for this test) ---
