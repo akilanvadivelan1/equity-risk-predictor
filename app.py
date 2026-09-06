@@ -1010,11 +1010,34 @@ def build_fundamentals(cik: str, ticker: str) -> Dict:
     else:
         band, summary = 'weak', 'Multiple financial trends are deteriorating at the same time, a broad warning sign.'
 
+    # ---- Compact snapshot for the top summary box (latest year) ----
+    ly = years[-1]
+    prev_ly = years[-2] if len(years) > 1 else None
+    rev_ly = revenue.get(ly)
+    ni_ly = net_income.get(ly)
+    net_margin_ly = (ni_ly / rev_ly) if (rev_ly and ni_ly is not None) else None
+    rev_yoy = _money_yoy(revenue, ly, prev_ly) if prev_ly else None
+    ni_yoy = _money_yoy(net_income, ly, prev_ly) if prev_ly else None
+    snapshot = {
+        'year': ly,
+        'items': [
+            {'label': 'Revenue', 'value': _fmt_money(rev_ly),
+             'yoy': (f"{rev_yoy*100:+.0f}%" if rev_yoy is not None else ''),
+             'dir': ('up' if (rev_yoy or 0) > 0 else 'down' if (rev_yoy or 0) < 0 else '')},
+            {'label': 'Net income', 'value': _fmt_money(ni_ly),
+             'yoy': (f"{ni_yoy*100:+.0f}%" if ni_yoy is not None else ''),
+             'dir': ('up' if (ni_yoy or 0) > 0 else 'down' if (ni_yoy or 0) < 0 else '')},
+            {'label': 'Net margin', 'value': (f"{net_margin_ly*100:.0f}%" if net_margin_ly is not None else 'n/a'),
+             'yoy': '', 'dir': ''},
+        ],
+    }
+
     return {
         'available': True,
         'years': years,
         'groups': groups_out,
         'health': {'band': band, 'summary': summary},
+        'snapshot': snapshot,
     }
 
 
@@ -1781,9 +1804,12 @@ def build_headline(scoring, current_year: int, prior_year: int) -> Dict:
         f"{unchanged_count} of the risk sections are unchanged from last year."
     )
 
+    changed_count = new_count + modified_count
+    total_count = len(risks)
     return {'band': band, 'score': overall, 'summary': summary,
             'new_count': new_count, 'modified_count': modified_count,
-            'unchanged_count': unchanged_count}
+            'unchanged_count': unchanged_count, 'changed_count': changed_count,
+            'total_count': total_count}
 
 
 
@@ -2647,11 +2673,34 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
     /* Two-lens summary row: side by side on desktop, stacked on mobile */
     .lens-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 8px; }
-    .lens-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 800; letter-spacing: 0.3px; margin: 34px 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
-    .lens-head .dot { width: 10px; height: 10px; border-radius: 3px; }
-    .lens-head.words .dot { background: var(--accent); }
-    .lens-head.numbers .dot { background: #0d9488; }
-    .lens-head .sub { color: var(--slate); font-weight: 500; }
+    .sbox { display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 22px 24px; box-shadow: var(--shadow); transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s; border-top: 4px solid var(--accent); }
+    .sbox.numbers { border-top-color: #0d9488; }
+    .sbox:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(15,23,42,0.10); }
+    .sbox-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .sbox-lbl { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); }
+    .sbox.words .sbox-lbl { color: var(--accent); }
+    .sbox.numbers .sbox-lbl { color: #0d9488; }
+    .sbox-go { font-size: 12px; font-weight: 700; color: var(--slate); }
+    .sbox:hover .sbox-go { color: var(--ink); }
+    .sbox-facts { display: flex; gap: 16px; margin-top: 14px; flex-wrap: wrap; }
+    .sbox-facts .fact { font-size: 13px; color: var(--slate); }
+    .sbox-facts .fn { font-size: 17px; font-weight: 800; color: var(--ink); margin-right: 3px; }
+    .sbox-new { margin-top: 12px; font-size: 13.5px; font-weight: 700; color: var(--red); }
+    .sbox-new.muted { color: var(--slate); font-weight: 500; }
+    .sbox-nums { display: flex; gap: 18px; margin-top: 14px; flex-wrap: wrap; }
+    .snum .sn-label { font-size: 11px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.3px; }
+    .snum .sn-val { font-size: 16px; font-weight: 800; color: var(--ink); margin-top: 2px; }
+    .snum .sn-val .up { color: #15803d; font-size: 11px; }
+    .snum .sn-val .down { color: #dc2626; font-size: 11px; }
+    .snum .sn-yoy { font-size: 12px; font-weight: 600; color: var(--slate); }
+
+    /* Section headers, clearly signal a new section */
+    .sec-head { margin: 40px 0 18px; padding: 18px 20px; border-radius: 14px; background: var(--bg-alt); border-left: 5px solid var(--accent); scroll-margin-top: 80px; }
+    .sec-head.numbers { border-left-color: #0d9488; }
+    .sec-eyebrow { font-size: 12px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+    .sec-head.numbers .sec-eyebrow { color: #0d9488; }
+    .sec-title { font-size: 24px; font-weight: 800; letter-spacing: -0.4px; color: var(--ink); margin-bottom: 6px; }
+    .sec-sub { font-size: 14px; color: var(--slate); line-height: 1.55; }
 
     .section-label { font-size: 13px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin: 6px 0 14px; }
 
@@ -2708,11 +2757,11 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .fin-colhead .h-latest { width: 96px; text-align: right; }
     .fin-colhead .h-verdict { width: 92px; text-align: right; }
     .fin-group { margin-top: 18px; }
-    .fin-group h4 { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #0d9488; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+    .fin-group h4 { font-size: 13px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: #0d9488; margin: 6px 0 4px; display: flex; align-items: center; gap: 6px; }
     .metric { border-top: 1px solid var(--line); }
     .metric-row { display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 12px 8px 12px 0; border-radius: 8px; }
     .metric-row:hover { background: var(--bg-alt); }
-    .metric-name { flex: 1; font-size: 14.5px; color: var(--ink); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+    .metric-name { flex: 1; font-size: 15px; color: var(--ink); font-weight: 700; display: flex; align-items: center; gap: 6px; }
     .metric-name .chev { color: var(--slate); font-size: 12px; transition: transform 0.15s; }
     .metric.open .chev { transform: rotate(90deg); color: #0d9488; }
     .metric-spark { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 24px; width: 84px; flex-shrink: 0; }
@@ -2941,31 +2990,54 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '  <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div>';
         html += '</div>';
 
-        // ── Two summary bands side by side (the two lenses at a glance) ──
+        // ── Two summary boxes side by side, clickable, information-rich ──
+        var hd = data.headline;
         html += '<div class="lens-summary">';
-        //   Words summary
-        html += '  <div class="signal">';
-        html += '    <div class="lbl">The words &middot; risk language</div>';
+
+        //   Words box
+        html += '  <button class="sbox words" onclick="jumpTo(\\'sec-words\\')">';
+        html += '    <div class="sbox-top"><span class="sbox-lbl">Risk language</span><span class="sbox-go">View &#8595;</span></div>';
         html += '    <div class="band band-' + band + '">' + band + '</div>';
-        html += '    <div class="meter"><div class="fill fill-' + band + '" style="width:' + data.headline.score + '%"></div></div>';
-        html += '    <div class="summary">' + esc(data.headline.summary) + '</div>';
-        html += '  </div>';
-        //   Numbers summary
-        html += '  <div class="signal">';
-        html += '    <div class="lbl">The numbers &middot; financial health</div>';
+        html += '    <div class="meter"><div class="fill fill-' + band + '" style="width:' + hd.score + '%"></div></div>';
+        html += '    <div class="sbox-facts">';
+        html += '      <div class="fact"><span class="fn">' + hd.total_count + '</span> total risks</div>';
+        html += '      <div class="fact"><span class="fn">' + hd.changed_count + '</span> changed</div>';
+        html += '      <div class="fact"><span class="fn">' + hd.unchanged_count + '</span> unchanged</div>';
+        html += '    </div>';
+        if (hd.new_count > 0) {
+            html += '    <div class="sbox-new">' + hd.new_count + ' brand-new risk' + (hd.new_count === 1 ? '' : 's') + ' this year</div>';
+        } else {
+            html += '    <div class="sbox-new muted">No brand-new risks this year</div>';
+        }
+        html += '  </button>';
+
+        //   Numbers box
+        html += '  <button class="sbox numbers" onclick="jumpTo(\\'sec-numbers\\')">';
+        html += '    <div class="sbox-top"><span class="sbox-lbl">Financial health</span><span class="sbox-go">View &#8595;</span></div>';
         if (hband) {
             html += '    <div class="band band-' + hband + '">' + hband + '</div>';
             html += '    <div class="meter"><div class="fill fill-' + hband + '" style="width:100%"></div></div>';
-            html += '    <div class="summary">' + esc(f.health.summary) + '</div>';
+            html += '    <div class="sbox-nums">';
+            f.snapshot.items.forEach(function(it) {
+                var arrow = it.dir === 'up' ? '<span class="up">&#9650;</span>' : (it.dir === 'down' ? '<span class="down">&#9660;</span>' : '');
+                html += '<div class="snum"><div class="sn-label">' + esc(it.label) + '</div>'
+                     +  '<div class="sn-val">' + esc(it.value) + ' ' + arrow + ' <span class="sn-yoy">' + esc(it.yoy) + '</span></div></div>';
+            });
+            html += '    </div>';
+            html += '    <div class="sbox-new muted">Most recent year: FY' + esc(f.snapshot.year) + '</div>';
         } else {
             html += '    <div class="band" style="color:#94a3b8">n/a</div>';
-            html += '    <div class="summary">' + esc((f && f.message) || 'Financial data is not available for this company yet.') + '</div>';
+            html += '    <div class="sbox-new muted">' + esc((f && f.message) || 'Financial data is not available yet.') + '</div>';
         }
-        html += '  </div>';
+        html += '  </button>';
         html += '</div>';
 
-        // ══════════ LENS 1: THE WORDS ══════════
-        html += '<div class="lens-head words"><span class="dot"></span>The words <span class="sub">&middot; what changed in the risk language, ' + esc(data.prior_year) + ' to ' + esc(data.current_year) + '</span></div>';
+        // ══════════ SECTION 1: RISK LANGUAGE ══════════
+        html += '<div class="sec-head words" id="sec-words">';
+        html += '  <div class="sec-eyebrow">Risk language</div>';
+        html += '  <h3 class="sec-title">What is the company warning about?</h3>';
+        html += '  <div class="sec-sub">What the annual report (10-K) says about the risks the company faces, and how the wording changed from ' + esc(data.prior_year) + ' to ' + esc(data.current_year) + '.</div>';
+        html += '</div>';
 
         html += '<div class="tone-key">';
         html += '  <b>How to read tone.</b> Negative words describe harm, decline, or failure (adverse, impair, loss). ';
@@ -2984,8 +3056,12 @@ ANALYZE_PAGE = """<!DOCTYPE html>
             html += '</ul></details>';
         }
 
-        // ══════════ LENS 2: THE NUMBERS ══════════
-        html += '<div class="lens-head numbers"><span class="dot"></span>The numbers <span class="sub">&middot; financial health, past 5 years</span></div>';
+        // ══════════ SECTION 2: FINANCIAL HEALTH ══════════
+        html += '<div class="sec-head numbers" id="sec-numbers">';
+        html += '  <div class="sec-eyebrow">Financial health</div>';
+        html += '  <h3 class="sec-title">How healthy are the numbers?</h3>';
+        html += '  <div class="sec-sub">What the reported financials say about the business, as a trend over the past five years.</div>';
+        html += '</div>';
         html += renderFinancials(data.fundamentals);
 
         html += '<div class="foot-note">An observation, not a prediction. We explore whether the patterns academic research describes show up in real companies. Not investment advice.</div>';
@@ -3123,6 +3199,13 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
         h += '</div>';
         return h;
+    }
+
+    function jumpTo(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var top = el.getBoundingClientRect().top + window.pageYOffset - 72;
+        window.scrollTo({ top: top, behavior: 'smooth' });
     }
 
     function toggleYear(id) {
