@@ -1813,6 +1813,48 @@ def build_headline(scoring, current_year: int, prior_year: int) -> Dict:
             'removed_count': removed_count, 'total_count': total_count}
 
 
+def build_combined_verdict(headline: Dict, fundamentals: Dict) -> Dict:
+    """
+    Read the two lenses together and return a descriptive verdict (not a score,
+    not advice). Tone is 'concern' (both lean negative), 'watch' (they diverge),
+    or 'steady' (both calm), which drives the banner color.
+    """
+    risk_band = headline.get('band', 'mild')          # mild/moderate/serious/severe
+    words_negative = risk_band in ('serious', 'severe')
+
+    if not fundamentals or not fundamentals.get('available'):
+        # Numbers unavailable: describe the words only.
+        if words_negative:
+            return {'tone': 'watch', 'headline': 'The risk language is turning more cautious',
+                    'text': "The company's risk wording leaned more negative and uncertain this year. "
+                            "Financial data was not available to compare, so this reflects the words alone."}
+        return {'tone': 'steady', 'headline': 'The risk language looks steady',
+                'text': "The risk wording changed little from last year. Financial data was not available to compare."}
+
+    health_band = fundamentals['health']['band']       # strong/healthy/mixed/weak
+    numbers_weak = health_band in ('mixed', 'weak')
+
+    if words_negative and numbers_weak:
+        return {'tone': 'concern',
+                'headline': 'Both lenses point the same way. This deserves a closer look',
+                'text': "The risk language turned more cautious this year, and the financial trends are "
+                        "softening too. When the words and the numbers move the same way, the signal is strongest."}
+    if words_negative and not numbers_weak:
+        return {'tone': 'watch',
+                'headline': 'The company is flagging risks, but the numbers are holding',
+                'text': "The risk wording leaned more negative this year, yet the financial trends still look "
+                        "solid. That can mean the company is disclosing risks early, before they show up in results."}
+    if (not words_negative) and numbers_weak:
+        return {'tone': 'watch',
+                'headline': 'The numbers are slipping even though the language stayed calm',
+                'text': "The risk wording changed little, but several financial trends are moving the wrong way. "
+                        "The words may not yet reflect what the numbers are already showing."}
+    return {'tone': 'steady',
+            'headline': 'Both lenses look steady',
+            'text': "Neither the risk language nor the financial trends raised a strong flag this year. "
+                    "This is the calmest of the four combinations."}
+
+
 
 # =========================================================
 # HTML Templates
@@ -2672,8 +2714,25 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .band-mixed   { color: #b45309; } .fill-mixed   { background: linear-gradient(90deg,#fbbf24,#f59e0b); }
     .band-weak    { color: #dc2626; } .fill-weak    { background: linear-gradient(90deg,#f87171,#dc2626); }
 
+    /* Overall summary container (wraps header + verdict + the two boxes) */
+    .overall { background: var(--bg-alt); border: 1px solid var(--line); border-radius: 18px; padding: 22px 22px 24px; margin-bottom: 10px; }
+    .overall-label { font-size: 11px; font-weight: 800; letter-spacing: 0.8px; text-transform: uppercase; color: var(--slate); margin-bottom: 10px; }
+    .overall .result-head { margin-bottom: 16px; }
+
+    /* Combined verdict banner */
+    .verdict { border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; border: 1px solid var(--line); }
+    .verdict-head { font-size: 16px; font-weight: 800; color: var(--ink); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .verdict-head .v-icon { font-size: 17px; }
+    .verdict-text { font-size: 13.5px; color: #334155; line-height: 1.6; }
+    .verdict-concern { background: #fef2f2; border-color: #fecaca; }
+    .verdict-concern .verdict-head, .verdict-concern .v-icon { color: #dc2626; }
+    .verdict-watch { background: #fff7ed; border-color: #fed7aa; }
+    .verdict-watch .verdict-head, .verdict-watch .v-icon { color: #c2410c; }
+    .verdict-steady { background: #f0fdf4; border-color: #bbf7d0; }
+    .verdict-steady .verdict-head, .verdict-steady .v-icon { color: #15803d; }
+
     /* Two-lens summary row: side by side on desktop, stacked on mobile */
-    .lens-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 8px; }
+    .lens-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 0; }
     .sbox { display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 15px 18px; box-shadow: var(--shadow); transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s; border-top: 4px solid var(--accent); }
     .sbox.numbers { border-top-color: #0d9488; }
     .sbox:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(15,23,42,0.10); }
@@ -3008,13 +3067,27 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         var hband = (f.available && f.health) ? f.health.band : null;
         var html = '';
 
-        html += '<div class="result-head">';
-        html += '  <div class="co"><span class="tk">' + esc(data.ticker) + '</span> &mdash; ' + esc(data.company) + '</div>';
-        html += '  <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div>';
-        html += '</div>';
-
-        // ── Two summary boxes side by side, clickable, information-rich ──
         var hd = data.headline;
+        var vd = data.verdict || {};
+
+        // ══════════ OVERALL SUMMARY (distinct container) ══════════
+        html += '<div class="overall">';
+        html += '  <div class="overall-label">Overall summary</div>';
+        html += '  <div class="result-head">';
+        html += '    <div class="co"><span class="tk">' + esc(data.ticker) + '</span> &mdash; ' + esc(data.company) + '</div>';
+        html += '    <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div>';
+        html += '  </div>';
+
+        // Combined verdict banner (words + numbers together)
+        if (vd.headline) {
+            var vicon = vd.tone === 'concern' ? '&#9873;' : (vd.tone === 'watch' ? '&#9888;' : '&#10003;');
+            html += '  <div class="verdict verdict-' + (vd.tone || 'steady') + '">';
+            html += '    <div class="verdict-head"><span class="v-icon">' + vicon + '</span>' + esc(vd.headline) + '</div>';
+            html += '    <div class="verdict-text">' + esc(vd.text) + '</div>';
+            html += '  </div>';
+        }
+
+        // ── Two lens boxes side by side, clickable, information-rich ──
         html += '<div class="lens-summary">';
 
         //   Words box
@@ -3053,7 +3126,8 @@ ANALYZE_PAGE = """<!DOCTYPE html>
             html += '    <div class="sbox-new muted">' + esc((f && f.message) || 'Financial data is not available yet.') + '</div>';
         }
         html += '  </button>';
-        html += '</div>';
+        html += '</div>';   // close .lens-summary
+        html += '</div>';   // close .overall
 
         // ══════════ SECTION 1: RISK LANGUAGE ══════════
         html += '<div class="sec-head words" id="sec-words">';
@@ -3485,12 +3559,15 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 print(f"  [ANALYZE] {ticker}: fundamentals error {e}")
                 fundamentals = {'available': False}
 
+            verdict = build_combined_verdict(headline, fundamentals)
+
             result = {
                 'ticker': ticker,
                 'company': company,
                 'current_year': current_year,
                 'prior_year': prior_year,
                 'headline': headline,
+                'verdict': verdict,
                 'risks': changed,
                 'removed': removed,
                 'unchanged': unchanged,
