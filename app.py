@@ -787,8 +787,14 @@ def build_fundamentals(cik: str, ticker: str) -> Dict:
     op_income = _annual_by_year(us_gaap, 'OperatingIncomeLoss')
     net_income = _annual_by_year(us_gaap, 'NetIncomeLoss')
     dep_amort = _annual_by_year(us_gaap, 'DepreciationDepletionAndAmortization', 'DepreciationAmortizationAndAccretionNet', 'DepreciationAndAmortization')
-    ocf = _annual_by_year(us_gaap, 'NetCashProvidedByUsedInOperatingActivities')
-    capex = _annual_by_year(us_gaap, 'PaymentsToAcquirePropertyPlantAndEquipment')
+    ocf = _annual_by_year(us_gaap, 'NetCashProvidedByUsedInOperatingActivities',
+                          'NetCashProvidedByUsedInOperatingActivitiesContinuingOperations')
+    # CapEx: companies tag this differently. Amazon uses PaymentsToAcquireProductiveAssets.
+    capex = _annual_by_year(us_gaap,
+                            'PaymentsToAcquirePropertyPlantAndEquipment',
+                            'PaymentsToAcquireProductiveAssets',
+                            'PaymentsToAcquirePropertyPlantAndEquipmentAndIntangibleAssets',
+                            'PaymentsForCapitalImprovements')
     cash = _annual_by_year(us_gaap, 'CashAndCashEquivalentsAtCarryingValue')
     assets = _annual_by_year(us_gaap, 'Assets')
     lt_debt = _annual_by_year(us_gaap, 'LongTermDebt', 'LongTermDebtNoncurrent')
@@ -884,12 +890,75 @@ def build_fundamentals(cik: str, ticker: str) -> Dict:
     concern_count = 0   # 'bad' tones
     watch_count = 0     # 'watch' tones
     good_count = 0
+
+    # Raw concept dicts available for showing the components behind ratios.
+    ebitda_map = vals['ebitda']
+    raw_lookup = {
+        'revenue': ('Revenue', revenue, 'money'),
+        'cogs': ('Cost of revenue', cogs, 'money'),
+        'op_income': ('Operating income', op_income, 'money'),
+        'dep_amort': ('Depreciation & amortization', dep_amort, 'money'),
+        'ocf': ('Operating cash flow', ocf, 'money'),
+        'capex': ('Capital expenditures', capex, 'money'),
+        'ebitda': ('EBITDA', ebitda_map, 'money'),
+        'debt': ('Long-term debt', lt_debt, 'money'),
+        'liabilities': ('Total liabilities', liabilities, 'money'),
+        'assets': ('Total assets', assets, 'money'),
+        'inventory': ('Inventory', inventory, 'money'),
+        'receivables': ('Receivables', receivables, 'money'),
+    }
+    # For each metric, which raw components to display when expanded.
+    _COMPONENTS = {
+        'gross_margin': ['revenue', 'cogs'],
+        'operating_margin': ['op_income', 'revenue'],
+        'ebitda': ['op_income', 'dep_amort'],
+        'free_cash_flow': ['ocf', 'capex'],
+        'debt_to_ebitda': ['debt', 'ebitda'],
+        'debt_to_assets': ['liabilities', 'assets'],
+        'inventory_vs_sales': ['inventory', 'revenue'],
+        'receivables_vs_sales': ['receivables', 'revenue'],
+    }
+
+    def _money_yoy(dmap, y, prev):
+        """Percent growth for dollar metrics."""
+        if prev is None or dmap.get(y) is None or dmap.get(prev) in (None, 0):
+            return None
+        return (dmap[y] - dmap[prev]) / abs(dmap[prev])
+
+    def _fmt_yoy(metric, dmap, y, prev):
+        """YoY as percent growth for money metrics, point change for pct/ratio."""
+        cur, pr = dmap.get(y), dmap.get(prev) if prev is not None else None
+        if cur is None or pr is None:
+            return ''
+        if metric in _MONEY:
+            g = _money_yoy(dmap, y, prev)
+            if g is None:
+                return ''
+            return f"{g*100:+.0f}%"
+        if metric in _PCT:
+            # percentage-point change (values stored as fractions)
+            return f"{(cur - pr)*100:+.1f} pts"
+        if metric in _RATIO:
+            return f"{cur - pr:+.2f}"
+        return ''
+
+    def _fmt_component(comp_key, v):
+        return _fmt_money(v) if raw_lookup[comp_key][2] == 'money' else (_fmt_value(comp_key, v))
+
     for group_name, metric_keys in _METRIC_GROUPS:
         rows = []
         for mk in metric_keys:
             smap = vals.get(mk, {})
-            series_list = [{'year': y, 'value': smap.get(y),
-                            'display': _fmt_value(mk, smap.get(y))} for y in years]
+            # Per-year series with value, display, and YoY (vs the prior year in `years`).
+            series_list = []
+            for i, y in enumerate(years):
+                prev = years[i - 1] if i > 0 else None
+                series_list.append({
+                    'year': y,
+                    'value': smap.get(y),
+                    'display': _fmt_value(mk, smap.get(y)),
+                    'yoy': _fmt_yoy(mk, smap, y, prev),
+                })
             # latest non-null year
             latest_year = None
             for y in reversed(years):
@@ -903,8 +972,18 @@ def build_fundamentals(cik: str, ticker: str) -> Dict:
                 watch_count += 1
             elif tone == 'good':
                 good_count += 1
-            # sparkline points (numeric, None -> skip)
-            spark = [smap.get(y) for y in years]
+            # sparkline points, with per-year value+display for hover tooltips
+            spark = [{'year': y, 'value': smap.get(y), 'display': _fmt_value(mk, smap.get(y))} for y in years]
+
+            # Component rows (shown when expanded) for derived/ratio metrics.
+            components = []
+            for comp_key in _COMPONENTS.get(mk, []):
+                clabel, cdmap, _ = raw_lookup[comp_key]
+                components.append({
+                    'label': clabel,
+                    'series': [{'year': y, 'display': _fmt_component(comp_key, cdmap.get(y))} for y in years],
+                })
+
             rows.append({
                 'key': mk,
                 'label': _METRIC_LABELS[mk],
@@ -915,6 +994,7 @@ def build_fundamentals(cik: str, ticker: str) -> Dict:
                 'tone': tone,
                 'series': series_list,
                 'spark': spark,
+                'components': components,
             })
         groups_out.append({'name': group_name, 'tooltip': _GROUP_TOOLTIPS[group_name], 'metrics': rows})
 
@@ -2510,7 +2590,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .nav-actions { margin-left: auto; }
     .signin-btn { padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: #f1f5f9; color: #94a3b8; font-size: 13px; font-weight: 600; cursor: not-allowed; font-family: inherit; }
 
-    .container { max-width: 820px; margin: 0 auto; padding: 40px 24px 80px; }
+    .container { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
 
     .search { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 32px; box-shadow: var(--shadow); text-align: center; }
     .search h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
@@ -2559,6 +2639,19 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .band-moderate{ color: #b45309; } .fill-moderate{ background: linear-gradient(90deg,#fbbf24,#f59e0b); }
     .band-serious { color: #c2410c; } .fill-serious { background: linear-gradient(90deg,#fb923c,#ea580c); }
     .band-severe  { color: #dc2626; } .fill-severe  { background: linear-gradient(90deg,#f87171,#dc2626); }
+    /* Financial health bands */
+    .band-strong  { color: #15803d; } .fill-strong  { background: linear-gradient(90deg,#4ade80,#22c55e); }
+    .band-healthy { color: #15803d; } .fill-healthy { background: linear-gradient(90deg,#86efac,#22c55e); }
+    .band-mixed   { color: #b45309; } .fill-mixed   { background: linear-gradient(90deg,#fbbf24,#f59e0b); }
+    .band-weak    { color: #dc2626; } .fill-weak    { background: linear-gradient(90deg,#f87171,#dc2626); }
+
+    /* Two-lens summary row: side by side on desktop, stacked on mobile */
+    .lens-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 8px; }
+    .lens-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 800; letter-spacing: 0.3px; margin: 34px 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+    .lens-head .dot { width: 10px; height: 10px; border-radius: 3px; }
+    .lens-head.words .dot { background: var(--accent); }
+    .lens-head.numbers .dot { background: #0d9488; }
+    .lens-head .sub { color: var(--slate); font-weight: 500; }
 
     .section-label { font-size: 13px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin: 6px 0 14px; }
 
@@ -2604,39 +2697,63 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .foot-note { margin-top: 26px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--slate); line-height: 1.6; text-align: center; }
 
     /* ---------- Numbers lens (Financial Health) ---------- */
-    .fin { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 26px; box-shadow: var(--shadow); margin-top: 22px; }
+    .fin { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 26px; box-shadow: var(--shadow); }
     .fin .lbl { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin-bottom: 12px; }
     .fin .band { font-size: 26px; font-weight: 800; letter-spacing: -0.4px; text-transform: capitalize; margin-bottom: 12px; }
-    .fin .fin-summary { color: #334155; font-size: 14.5px; line-height: 1.6; margin-bottom: 20px; }
+    .fin .fin-summary { color: #334155; font-size: 14.5px; line-height: 1.6; margin-bottom: 8px; }
+    /* Column header row over the metric table */
+    .fin-colhead { display: flex; align-items: center; gap: 12px; padding: 10px 0 6px; font-size: 11px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid var(--line); }
+    .fin-colhead .h-name { flex: 1; }
+    .fin-colhead .h-spark { width: 84px; text-align: center; }
+    .fin-colhead .h-latest { width: 96px; text-align: right; }
+    .fin-colhead .h-verdict { width: 92px; text-align: right; }
     .fin-group { margin-top: 18px; }
-    .fin-group h4 { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-    .metric { border-top: 1px solid var(--line); padding: 12px 0; }
-    .metric-row { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+    .fin-group h4 { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #0d9488; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+    .metric { border-top: 1px solid var(--line); }
+    .metric-row { display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 12px 8px 12px 0; border-radius: 8px; }
+    .metric-row:hover { background: var(--bg-alt); }
     .metric-name { flex: 1; font-size: 14.5px; color: var(--ink); font-weight: 600; display: flex; align-items: center; gap: 6px; }
-    .metric-spark { display: flex; align-items: flex-end; gap: 2px; height: 22px; width: 70px; flex-shrink: 0; }
-    .metric-spark .bar { flex: 1; background: #cbd5e1; border-radius: 1px; min-height: 2px; }
-    .metric-latest { width: 92px; text-align: right; flex-shrink: 0; }
+    .metric-name .chev { color: var(--slate); font-size: 12px; transition: transform 0.15s; }
+    .metric.open .chev { transform: rotate(90deg); color: #0d9488; }
+    .metric-spark { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 24px; width: 84px; flex-shrink: 0; }
+    .metric-spark .bar { flex: 1; background: #cbd5e1; border-radius: 1px; min-height: 2px; position: relative; }
+    .metric-spark .bar:hover { background: #0d9488; }
+    .metric-spark .bar .bar-tip { display: none; position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%); background: var(--navy); color: #e2e8f0; font-size: 11px; padding: 4px 7px; border-radius: 6px; white-space: nowrap; z-index: 30; }
+    .metric-spark .bar:hover .bar-tip { display: block; }
+    .metric-latest { width: 96px; text-align: right; flex-shrink: 0; }
     .metric-latest .v { font-size: 15px; font-weight: 700; color: var(--ink); }
-    .metric-latest .y { font-size: 10.5px; color: var(--slate); }
     .metric-verdict { width: 92px; text-align: right; flex-shrink: 0; font-size: 12px; font-weight: 700; text-transform: capitalize; }
     .metric-verdict.good { color: #15803d; }
     .metric-verdict.watch { color: #b45309; }
     .metric-verdict.bad { color: #dc2626; }
     .metric-verdict.unknown { color: #94a3b8; }
-    .metric-by-year { display: none; margin-top: 12px; padding: 12px 14px; background: var(--bg-alt); border-radius: 10px; }
+    .metric-by-year { display: none; padding: 4px 8px 16px; }
     .metric-by-year.show { display: block; }
     .by-year-grid { display: flex; gap: 8px; }
-    .by-year-cell { flex: 1; text-align: center; }
+    .by-year-cell { flex: 1; text-align: center; padding: 8px 4px; background: var(--bg-alt); border-radius: 8px; }
+    .by-year-cell.latest { background: #ecfdf5; border: 1px solid #a7f3d0; }
     .by-year-cell .yr { font-size: 11px; color: var(--slate); margin-bottom: 4px; }
+    .by-year-cell.latest .yr { color: #0d9488; font-weight: 700; }
     .by-year-cell .val { font-size: 13.5px; color: var(--ink); font-weight: 600; }
-    .by-year-cell.latest .val { color: var(--accent); }
+    .by-year-cell.latest .val { font-weight: 800; }
+    .by-year-cell .yoy { font-size: 11px; margin-top: 3px; color: var(--slate); }
+    .comp-table { margin-top: 10px; }
+    .comp-row { display: flex; gap: 8px; align-items: center; padding-top: 8px; }
+    .comp-row .comp-label { flex: 1; font-size: 12px; color: var(--slate); }
+    .comp-row .comp-cell { flex: 1; text-align: center; font-size: 12px; color: #475569; }
+    .comp-row .comp-cell.latest { color: var(--ink); font-weight: 700; }
     .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; background: #e2e8f0; color: #475569; font-size: 10px; font-weight: 700; cursor: help; flex-shrink: 0; }
     .tip:hover .tip-box, .tip.open .tip-box { opacity: 1; visibility: visible; }
     .tip-box { position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: var(--navy); color: #e2e8f0; font-size: 12px; font-weight: 400; line-height: 1.5; text-transform: none; letter-spacing: 0; padding: 10px 12px; border-radius: 8px; opacity: 0; visibility: hidden; transition: opacity 0.15s; z-index: 30; text-align: left; }
-    .together { margin-top: 20px; padding: 14px 18px; background: var(--accent-soft); border-radius: 12px; font-size: 13px; color: #1e3a5f; line-height: 1.6; }
+    .together { margin-top: 24px; padding: 14px 18px; background: var(--accent-soft); border-radius: 12px; font-size: 13px; color: #1e3a5f; line-height: 1.6; }
     .together b { color: var(--navy); }
 
-    @media (max-width: 640px) { .menu { display: none; } .search-row { flex-direction: column; } .metric-verdict { display: none; } }
+    @media (max-width: 760px) {
+        .menu { display: none; }
+        .search-row { flex-direction: column; }
+        .lens-summary { grid-template-columns: 1fr; }
+        .metric-verdict, .fin-colhead .h-verdict { display: none; }
+    }
 </style>
 </head>
 <body>
@@ -2815,6 +2932,8 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
     function render(data) {
         var band = data.headline.band;
+        var f = data.fundamentals || {};
+        var hband = (f.available && f.health) ? f.health.band : null;
         var html = '';
 
         html += '<div class="result-head">';
@@ -2822,15 +2941,32 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '  <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div>';
         html += '</div>';
 
-        // Signal panel
-        html += '<div class="signal">';
-        html += '  <div class="lbl">Risk signal</div>';
-        html += '  <div class="band band-' + band + '">' + band + '</div>';
-        html += '  <div class="meter"><div class="fill fill-' + band + '" style="width:' + data.headline.score + '%"></div></div>';
-        html += '  <div class="summary">' + esc(data.headline.summary) + '</div>';
+        // ── Two summary bands side by side (the two lenses at a glance) ──
+        html += '<div class="lens-summary">';
+        //   Words summary
+        html += '  <div class="signal">';
+        html += '    <div class="lbl">The words &middot; risk language</div>';
+        html += '    <div class="band band-' + band + '">' + band + '</div>';
+        html += '    <div class="meter"><div class="fill fill-' + band + '" style="width:' + data.headline.score + '%"></div></div>';
+        html += '    <div class="summary">' + esc(data.headline.summary) + '</div>';
+        html += '  </div>';
+        //   Numbers summary
+        html += '  <div class="signal">';
+        html += '    <div class="lbl">The numbers &middot; financial health</div>';
+        if (hband) {
+            html += '    <div class="band band-' + hband + '">' + hband + '</div>';
+            html += '    <div class="meter"><div class="fill fill-' + hband + '" style="width:100%"></div></div>';
+            html += '    <div class="summary">' + esc(f.health.summary) + '</div>';
+        } else {
+            html += '    <div class="band" style="color:#94a3b8">n/a</div>';
+            html += '    <div class="summary">' + esc((f && f.message) || 'Financial data is not available for this company yet.') + '</div>';
+        }
+        html += '  </div>';
         html += '</div>';
 
-        // Tone key
+        // ══════════ LENS 1: THE WORDS ══════════
+        html += '<div class="lens-head words"><span class="dot"></span>The words <span class="sub">&middot; what changed in the risk language, ' + esc(data.prior_year) + ' to ' + esc(data.current_year) + '</span></div>';
+
         html += '<div class="tone-key">';
         html += '  <b>How to read tone.</b> Negative words describe harm, decline, or failure (adverse, impair, loss). ';
         html += '  Uncertainty words are hedging language a company uses when it is unsure (may, could, uncertain). ';
@@ -2838,20 +2974,18 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '</div>';
 
         if (data.risks.length) {
-            html += '<div class="section-label">What changed this year</div>';
             data.risks.forEach(function(r) { html += renderCard(r); });
         } else {
             html += '<div class="card"><div class="note">No changed risks were detected between these two years. Most of the filing is unchanged.</div></div>';
         }
-
-        // Unchanged
         if (data.unchanged_titles && data.unchanged_titles.length) {
             html += '<details class="unchanged"><summary>' + data.unchanged_titles.length + ' risks unchanged from last year (no signal)</summary><ul>';
             data.unchanged_titles.forEach(function(t) { html += '<li>' + esc(t) + '</li>'; });
             html += '</ul></details>';
         }
 
-        // Numbers lens (Financial Health)
+        // ══════════ LENS 2: THE NUMBERS ══════════
+        html += '<div class="lens-head numbers"><span class="dot"></span>The numbers <span class="sub">&middot; financial health, past 5 years</span></div>';
         html += renderFinancials(data.fundamentals);
 
         html += '<div class="foot-note">An observation, not a prediction. We explore whether the patterns academic research describes show up in real companies. Not investment advice.</div>';
@@ -2900,54 +3034,84 @@ ANALYZE_PAGE = """<!DOCTYPE html>
              + '<span class="tip-box">' + esc(text) + '</span></span>';
     }
 
-    function sparkBars(spark, higherWorse) {
-        var nums = spark.filter(function(v) { return v !== null && v !== undefined; });
+    function sparkBars(spark) {
+        // spark is [{year, value, display}]
+        var nums = spark.map(function(s){ return s.value; }).filter(function(v){ return v !== null && v !== undefined; });
         if (!nums.length) return '<div class="metric-spark"></div>';
         var min = Math.min.apply(null, nums), max = Math.max.apply(null, nums);
         var range = (max - min) || 1;
         var bars = '';
-        spark.forEach(function(v) {
-            if (v === null || v === undefined) { bars += '<div class="bar" style="height:2px;opacity:0.3"></div>'; return; }
+        spark.forEach(function(s) {
+            var v = s.value;
+            if (v === null || v === undefined) {
+                bars += '<div class="bar" style="height:2px;opacity:0.3"></div>';
+                return;
+            }
             var pct = Math.round(((v - min) / range) * 100);
-            var h = Math.max(pct, 8);
-            bars += '<div class="bar" style="height:' + h + '%"></div>';
+            var hgt = Math.max(pct, 8);
+            bars += '<div class="bar" style="height:' + hgt + '%">'
+                 +  '<span class="bar-tip">FY' + s.year + ': ' + esc(s.display) + '</span></div>';
         });
         return '<div class="metric-spark">' + bars + '</div>';
     }
 
     function renderFinancials(f) {
         if (!f || !f.available) {
-            return '<div class="fin"><div class="lbl">Financial health</div>'
-                 + '<div class="fin-summary">' + esc((f && f.message) || 'Financial data is not available for this company yet.') + '</div></div>';
+            return '<div class="fin"><div class="fin-summary">'
+                 + esc((f && f.message) || 'Financial data is not available for this company yet.')
+                 + '</div></div>';
         }
-        var band = f.health.band;
         var h = '<div class="fin">';
-        h += '  <div class="lbl">Financial health &middot; the numbers, past 5 years</div>';
-        h += '  <div class="band band-' + band + '">' + band + '</div>';
         h += '  <div class="fin-summary">' + esc(f.health.summary) + '</div>';
+
+        // Column header so the layout reads like a table.
+        h += '  <div class="fin-colhead">';
+        h += '    <span class="h-name">Metric</span>';
+        h += '    <span class="h-spark">5-year trend</span>';
+        h += '    <span class="h-latest">FY' + esc(f.years[f.years.length - 1]) + '</span>';
+        h += '    <span class="h-verdict">Trend</span>';
+        h += '  </div>';
 
         f.groups.forEach(function(g) {
             h += '<div class="fin-group">';
             h += '  <h4>' + esc(g.name) + tipIcon(g.tooltip) + '</h4>';
             g.metrics.forEach(function(mtr) {
                 var mid = 'm-' + mtr.key;
-                h += '<div class="metric">';
-                h += '  <div class="metric-row" onclick="toggleYear(\\'' + mid + '\\')">';
-                h += '    <div class="metric-name">' + esc(mtr.label) + tipIcon(mtr.tooltip) + '</div>';
+                h += '<div class="metric" id="wrap-' + mid + '">';
+                h += '  <div class="metric-row" onclick="toggleYear(\\'' + mid + '\\')" title="Expand to see the last 5 years">';
+                h += '    <div class="metric-name"><span class="chev">&#9656;</span>' + esc(mtr.label) + tipIcon(mtr.tooltip) + '</div>';
                 h += '    ' + sparkBars(mtr.spark);
-                h += '    <div class="metric-latest"><div class="v">' + esc(mtr.latest_display) + '</div><div class="y">' + (mtr.latest_year ? ('FY' + mtr.latest_year) : '') + '</div></div>';
+                h += '    <div class="metric-latest"><div class="v">' + esc(mtr.latest_display) + '</div></div>';
                 h += '    <div class="metric-verdict ' + mtr.tone + '">' + esc(mtr.verdict) + '</div>';
                 h += '  </div>';
-                // by-year horizontal
+
+                // By-year expander: values + YoY, latest bold.
                 h += '  <div class="metric-by-year" id="' + mid + '"><div class="by-year-grid">';
                 mtr.series.forEach(function(s, i) {
                     var isLatest = (i === mtr.series.length - 1);
                     h += '<div class="by-year-cell' + (isLatest ? ' latest' : '') + '">'
                        + '<div class="yr">FY' + s.year + '</div>'
-                       + '<div class="val">' + esc(s.display) + '</div></div>';
+                       + '<div class="val">' + esc(s.display) + '</div>'
+                       + '<div class="yoy">' + esc(s.yoy || '') + '</div></div>';
                 });
-                h += '  </div></div>';
-                h += '</div>';
+                h += '  </div>';
+
+                // Component numbers behind derived/ratio metrics.
+                if (mtr.components && mtr.components.length) {
+                    h += '<div class="comp-table">';
+                    mtr.components.forEach(function(comp) {
+                        h += '<div class="comp-row"><div class="comp-label">' + esc(comp.label) + '</div>';
+                        comp.series.forEach(function(cs, i) {
+                            var isLatest = (i === comp.series.length - 1);
+                            h += '<div class="comp-cell' + (isLatest ? ' latest' : '') + '">' + esc(cs.display) + '</div>';
+                        });
+                        h += '</div>';
+                    });
+                    h += '</div>';
+                }
+
+                h += '  </div>';  // close metric-by-year
+                h += '</div>';    // close metric
             });
             h += '</div>';
         });
@@ -2963,7 +3127,9 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
     function toggleYear(id) {
         var el = document.getElementById(id);
+        var wrap = document.getElementById('wrap-' + id);
         if (el) el.classList.toggle('show');
+        if (wrap) wrap.classList.toggle('open');
     }
 </script>
 </body>
