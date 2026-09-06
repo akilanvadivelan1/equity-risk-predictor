@@ -3476,6 +3476,12 @@ COMPARE_PAGE = """<!DOCTYPE html>
     .h2h-sub { font-size: 13px; color: var(--slate); line-height: 1.55; margin: 6px 0 12px; }
     .h2h-group { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--teal); margin: 16px 0 6px; }
     .h2h-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1.4fr; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+    .h2h-head { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1.4fr; gap: 12px; align-items: center; padding: 4px 0 10px; }
+    .h2h-colname { font-size: 13px; font-weight: 800; letter-spacing: 0.2px; }
+    .h2h-colname.a { color: #2563eb; }
+    .h2h-colname.b { color: #0d9488; }
+    .h2h-head .h2h-metric { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--slate); }
+    .h2h-head .h2h-verdict { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--slate); text-align: right; }
     .h2h-metric { font-size: 14px; font-weight: 700; color: var(--ink); }
     .h2h-side { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; }
     .h2h-side.win { background: #ecfdf5; }
@@ -3494,6 +3500,9 @@ COMPARE_PAGE = """<!DOCTYPE html>
         .h2h-row { grid-template-columns: 1fr 1fr; }
         .h2h-metric { grid-column: 1 / -1; }
         .h2h-verdict { grid-column: 1 / -1; text-align: left; }
+        .h2h-head { grid-template-columns: 1fr 1fr; }
+        .h2h-head .h2h-metric { display: none; }
+        .h2h-head .h2h-verdict { display: none; }
     }
 </style>
 </head>
@@ -3740,6 +3749,14 @@ COMPARE_PAGE = """<!DOCTYPE html>
         var tallyA = 0, tallyB = 0, close = 0;
         var h = '<div class="h2h"><div class="h2h-title">Head to head, who is trending better</div>';
         h += '<div class="h2h-sub">Judged on the five-year trajectory and stability of each metric, not on which company is bigger. Hover any bar for the yearly value.</div>';
+
+        // Column header so each sparkline column is clearly labeled by company.
+        h += '<div class="h2h-head">';
+        h += '  <div class="h2h-metric">Metric</div>';
+        h += '  <div class="h2h-colname a">' + esc(a.ticker) + '</div>';
+        h += '  <div class="h2h-colname b">' + esc(b.ticker) + '</div>';
+        h += '  <div class="h2h-verdict">Trending better</div>';
+        h += '</div>';
 
         fa.groups.forEach(function(g) {
             h += '<div class="h2h-group">' + esc(g.name) + '</div>';
