@@ -2064,6 +2064,7 @@ HOME_PAGE = """<!DOCTYPE html>
         <div class="menu">
             <a href="#top">Home</a>
             <a href="/analyze">Analyze</a>
+            <a href="/compare">Compare</a>
             <a href="#learning">Learning</a>
             <a href="#research">Research</a>
             <a href="https://akilanvadivelan.substack.com" target="_blank" rel="noopener">Substack <span class="ext">&#8599;</span></a>
@@ -2384,13 +2385,15 @@ HOME_PAGE = """<!DOCTYPE html>
             <button class="cd-close" onclick="closeCase()">Close</button>
         </div>
         <div class="cd-body">
-            <h5>What changed in the filing</h5>
-            <p>Compared with the prior year, Target's risk language grew more specific about excess inventory, supply chain disruption, and rising costs. The calm, repeated boilerplate of earlier filings gave way to sharper, more concrete warnings.</p>
-            <h5>What happened next</h5>
-            <p>On May 18, 2022, Target reported first quarter results and cut its operating margin outlook from over 8 percent to about 6 percent, pointing to the same inventory and cost pressures. The stock fell 24.9 percent in a single session to $161.61, its worst day since 1987, erasing roughly $25 billion in value.</p>
+            <h5>Healthy on the surface</h5>
+            <p>In early 2022, Target looked healthy on the surface. Fiscal 2021 had just closed with about 106 billion dollars in revenue, comparable sales up 12.7 percent, an operating margin of 8.4 percent, and full-year earnings of 14.10 dollars per share. The stock had spent much of the prior year near record highs. If you only watched those numbers, nothing seemed wrong.</p>
+            <h5>The words told a quieter story</h5>
+            <p>In its annual report, Target's risk language grew more specific about inventory, supply chain disruption, and rising costs, describing pressure from higher freight and transportation expense and the risk of carrying the wrong amount or mix of inventory. The calm, repeated boilerplate from earlier years gave way to sharper, more concrete warnings. These were small shifts in wording, the kind that are easy to skim past.</p>
+            <h5>The profit side buckled</h5>
+            <p>On May 18, 2022, Target reported first quarter results. Sales still grew, comparable sales were up 3.3 percent, but gross margin collapsed to 25.7 percent from about 30 percent a year earlier as freight, markdowns, and excess inventory ate into profit. Earnings per share came in at 2.16 dollars, down 48.2 percent from the prior year. Management cut its full-year operating margin outlook to about 6 percent, down from over 8 percent. The stock fell 24.9 percent in a single session to about 161 dollars, its worst day since 1987, erasing roughly 25 billion dollars in market value.</p>
             <h5>The takeaway</h5>
-            <p>The numbers still looked healthy on the surface. The words were already less confident. Reading both together gave a fuller picture than watching the price alone.</p>
-            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+            <p>Revenue never stopped growing. It was profit, the margins, that gave way, and the risk wording had already been pointing at the causes: inventory and costs. Reading both together, the words and the numbers, gave a fuller picture than watching the stock price or the sales line alone.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the patterns academic research describes appear in this company's story.</div>
         </div>
     </div>
 
@@ -2403,13 +2406,15 @@ HOME_PAGE = """<!DOCTYPE html>
             <button class="cd-close" onclick="closeCase()">Close</button>
         </div>
         <div class="cd-body">
-            <h5>What the filing said</h5>
-            <p>For years, Southwest's filings flagged its reliance on aging technology and crew scheduling systems as an operational risk. The warning was consistent and public, but it read as routine and drew little attention.</p>
+            <h5>A risk in plain view</h5>
+            <p>For years, Southwest's filings flagged its reliance on aging technology and crew scheduling systems as an operational risk. The warning was consistent and public. Because it repeated with little change, it read as routine, the kind of standing caution every airline includes. On the surface the business looked fine, Southwest would go on to report full-year 2022 revenue growth and a full-year profit.</p>
             <h5>What happened next</h5>
-            <p>A severe winter storm in December 2022 overwhelmed those very systems, forcing thousands of cancellations and stranding travelers over the holidays. The stock fell about 15.6 percent that month as the meltdown played out.</p>
+            <p>In late December 2022, a severe winter storm overwhelmed those exact systems. The crew scheduling software could not keep up, and the airline canceled more than 16,700 flights over the holidays, on two days scrapping over 60 percent of its schedule and stranding travelers across the country.</p>
+            <h5>The cost landed on the numbers</h5>
+            <p>Southwest said the meltdown cost it about 800 million dollars, and it posted a 220 million dollar net loss in the fourth quarter of 2022, even though the full year still finished profitable, with net income of about 539 million dollars. The stock fell roughly 15.6 percent in December. A year later the airline agreed to a 140 million dollar penalty tied to the episode.</p>
             <h5>The takeaway</h5>
-            <p>A risk that a company repeats year after year is easy to tune out. Tracking which disclosed risks are most exposed can help decide which ones deserve a second look.</p>
-            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+            <p>A risk a company repeats every year is easy to tune out, but repetition does not make it harmless. The full-year numbers stayed positive, yet one disclosed, long-ignored weakness produced an 800 million dollar hit and a losing quarter.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the patterns academic research describes appear in this company's story.</div>
         </div>
     </div>
 
@@ -2422,13 +2427,13 @@ HOME_PAGE = """<!DOCTYPE html>
             <button class="cd-close" onclick="closeCase()">Close</button>
         </div>
         <div class="cd-body">
-            <h5>What the filing said</h5>
-            <p>SVB's filings described a large bond portfolio exposed to rising interest rates and a deposit base heavily concentrated in technology startups. Both of these were stated plainly in its reports.</p>
-            <h5>What happened next</h5>
-            <p>As rates rose through 2022, the stock drifted down from about $559 to the low $200s. In March 2023 the bank sold bonds at a loss and tried to raise capital. Depositors rushed to withdraw, the stock crashed from about $268 to $106 on March 9, and trading was halted on March 10 as regulators closed the bank.</p>
+            <h5>The ingredients were disclosed</h5>
+            <p>By early 2023, SVB was the 16th largest bank in the United States, with roughly 209 billion dollars in assets. Its filings described a large portfolio of long-dated bonds exposed to rising interest rates, and a deposit base heavily concentrated in technology startups, more than 100 billion dollars of it uninsured. Neither was a secret. On their own, each looked like a normal line item. Together, they were a fragile combination waiting for the wrong conditions.</p>
+            <h5>Slow, then very fast</h5>
+            <p>Through 2022, as interest rates rose, the market value of that bond portfolio fell, eventually by billions of dollars, and the stock drifted down from around 559 dollars to the low 200s. The slow decline did not alarm most investors. Then it moved fast. In early March 2023, the bank sold bonds at a loss of about 1.8 billion dollars and tried to raise roughly 2.25 billion dollars in fresh capital. That signaled distress, and its concentrated depositors rushed to withdraw at once. The stock crashed from about 268 dollars to 106 dollars on March 9, and trading was halted on March 10 as regulators closed the bank, one of the largest bank failures in United States history.</p>
             <h5>The takeaway</h5>
-            <p>The two ingredients of the failure were both in the filings well before the collapse. The story moved slowly for a year, then very fast in a matter of days.</p>
-            <div class="cd-note">An observation, not a prediction. We are exploring whether the effects described in the research appear in this company's story.</div>
+            <p>The two ingredients of the failure, interest rate exposure and depositor concentration, were both in the filings long before the collapse. The story moved slowly for a year and then very quickly in a matter of days.</p>
+            <div class="cd-note">An observation, not a prediction. We are exploring whether the patterns academic research describes appear in this company's story.</div>
         </div>
     </div>
 </section>
@@ -2903,6 +2908,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         <div class="menu">
             <a href="/">Home</a>
             <a href="/analyze">Analyze</a>
+            <a href="/compare">Compare</a>
             <a href="/#learning">Learning</a>
             <a href="/#research">Research</a>
             <a href="/#about">About</a>
@@ -2954,6 +2960,17 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         .then(function(r) { return r.json(); })
         .then(function(d) { companies = d.companies || []; })
         .catch(function() { /* fall back to plain ticker typing */ });
+
+    // If arrived via /analyze?t=TICKER (e.g. from Compare), pre-fill and run.
+    (function() {
+        var params = new URLSearchParams(window.location.search);
+        var t = params.get('t');
+        if (t) {
+            selectedTicker = t.toUpperCase();
+            tickerEl.value = t.toUpperCase();
+            analyze();
+        }
+    })();
 
     function setStatus(msg, cls) {
         statusEl.textContent = msg || '';
@@ -3366,6 +3383,427 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
 
 
+COMPARE_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compare - S&amp;P 500 Risk Radar</title>
+<style>
+    :root {
+        --bg: #ffffff; --bg-alt: #f7f9fc; --navy: #0b1b34; --ink: #0f172a;
+        --slate: #64748b; --line: #e5e9f0; --accent: #2563eb; --accent-soft: #eff4ff;
+        --red: #dc2626; --teal: #0d9488;
+        --shadow: 0 1px 3px rgba(15,23,42,0.06), 0 8px 24px rgba(15,23,42,0.05);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg-alt); color: var(--ink); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+    a { color: inherit; }
+    .nav { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,0.9); backdrop-filter: saturate(180%) blur(12px); border-bottom: 1px solid var(--line); }
+    .nav-inner { max-width: 1000px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 40px; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .brand .logo { width: 26px; height: 26px; }
+    .brand h1 { font-size: 16px; color: var(--ink); font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; }
+    .brand h1 span { color: var(--accent); }
+    .menu { display: flex; align-items: center; gap: 26px; }
+    .menu a { color: var(--slate); text-decoration: none; font-size: 14px; font-weight: 500; }
+    .menu a:hover { color: var(--ink); }
+    .nav-actions { margin-left: auto; }
+    .signin-btn { padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: #f1f5f9; color: #94a3b8; font-size: 13px; font-weight: 600; cursor: not-allowed; font-family: inherit; }
+
+    .container { max-width: 1000px; margin: 0 auto; padding: 40px 24px 80px; }
+    .intro { text-align: center; margin-bottom: 28px; }
+    .intro h2 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
+    .intro p { color: var(--slate); font-size: 15px; }
+
+    .pickers { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: end; max-width: 760px; margin: 0 auto 10px; }
+    .pk-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--slate); margin-bottom: 6px; }
+    .vs { font-weight: 800; color: var(--slate); padding-bottom: 12px; }
+    .ac-wrap { position: relative; }
+    .ac-wrap input { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); padding: 12px 14px; font-size: 15px; font-family: inherit; }
+    .ac-wrap input:focus { outline: none; border-color: var(--accent); }
+    .ac-list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); max-height: 260px; overflow-y: auto; z-index: 20; display: none; }
+    .ac-list.show { display: block; }
+    .ac-item { padding: 10px 14px; cursor: pointer; font-size: 14px; display: flex; justify-content: space-between; gap: 10px; }
+    .ac-item:hover, .ac-item.active { background: var(--accent-soft); }
+    .ac-item .tk { color: var(--slate); font-weight: 700; font-size: 12.5px; }
+    .go-row { text-align: center; margin-top: 8px; }
+    .go-btn { padding: 12px 30px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .go-btn:hover { background: #1d4fd7; }
+    .go-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .hint { text-align: center; font-size: 13px; color: var(--slate); margin-top: 12px; }
+    .status { text-align: center; margin-top: 14px; font-size: 14px; min-height: 20px; }
+    .status.error { color: var(--red); }
+
+    .loading { display: none; text-align: center; padding: 34px; color: var(--slate); }
+    .loading.show { display: block; }
+    .spinner { width: 32px; height: 32px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 12px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .cmp { display: none; margin-top: 28px; }
+    .cmp.show { display: block; }
+    .cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .col { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); }
+    .col-head { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 14px; }
+    .col-head .tk { font-size: 22px; font-weight: 800; color: var(--accent); }
+    .col-head .nm { font-size: 13px; color: var(--slate); }
+    .col-head .yrs { font-size: 12px; color: var(--slate); margin-top: 3px; }
+
+    .row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .row:last-child { border-bottom: none; }
+    .row .r-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--slate); margin-bottom: 6px; }
+    .band { font-size: 20px; font-weight: 800; text-transform: capitalize; letter-spacing: -0.3px; }
+    .band-mild, .band-strong, .band-healthy { color: #15803d; }
+    .band-moderate, .band-mixed { color: #b45309; }
+    .band-serious { color: #c2410c; }
+    .band-severe, .band-weak { color: #dc2626; }
+    .verdict-line { font-size: 13.5px; font-weight: 700; margin-top: 2px; }
+    .vt-concern { color: #dc2626; } .vt-watch { color: #c2410c; } .vt-steady { color: #15803d; }
+    .subfacts { font-size: 13px; color: #334155; margin-top: 6px; }
+    .nums { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+    .num .n-label { font-size: 10.5px; text-transform: uppercase; color: var(--slate); }
+    .num .n-val { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .num .up { color: #15803d; font-size: 11px; } .num .down { color: #dc2626; font-size: 11px; }
+    .view-full { display: inline-block; margin-top: 14px; color: var(--accent); font-weight: 600; font-size: 14px; text-decoration: none; }
+    .view-full:hover { text-decoration: underline; }
+
+    .foot-note { margin-top: 24px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--slate); line-height: 1.6; text-align: center; }
+
+    @media (max-width: 720px) {
+        .menu { display: none; }
+        .pickers { grid-template-columns: 1fr; }
+        .vs { display: none; }
+        .cmp-grid { grid-template-columns: 1fr; }
+    }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+    <div class="nav-inner">
+        <a class="brand" href="/">
+            <svg class="logo" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="14" stroke="#2563eb" stroke-width="2" opacity="0.35"/>
+                <circle cx="16" cy="16" r="8.5" stroke="#2563eb" stroke-width="2" opacity="0.6"/>
+                <circle cx="16" cy="16" r="2.6" fill="#dc2626"/>
+                <line x1="16" y1="16" x2="27" y2="6.5" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <h1>S&amp;P 500 <span>Risk Radar</span></h1>
+        </a>
+        <div class="menu">
+            <a href="/">Home</a>
+            <a href="/analyze">Analyze</a>
+            <a href="/compare">Compare</a>
+            <a href="/#learning">Learning</a>
+            <a href="/#research">Research</a>
+            <a href="/#about">About</a>
+        </div>
+        <div class="nav-actions">
+            <button class="signin-btn" disabled title="Coming soon">Sign In</button>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="intro">
+        <h2>Compare two companies</h2>
+        <p>See their risk language and financial health side by side.</p>
+    </div>
+
+    <div class="pickers">
+        <div>
+            <div class="pk-label">Company A</div>
+            <div class="ac-wrap">
+                <input type="text" id="tickerA" placeholder="Search a company or ticker" autocomplete="off" spellcheck="false">
+                <div class="ac-list" id="listA"></div>
+            </div>
+        </div>
+        <div class="vs">vs</div>
+        <div>
+            <div class="pk-label">Company B</div>
+            <div class="ac-wrap">
+                <input type="text" id="tickerB" placeholder="Search a company or ticker" autocomplete="off" spellcheck="false">
+                <div class="ac-list" id="listB"></div>
+            </div>
+        </div>
+    </div>
+    <div class="go-row"><button class="go-btn" id="go-btn" onclick="compare()">Compare</button></div>
+    <div class="hint">Covers S&amp;P 500 companies as of 30 August 2026.</div>
+    <div class="status" id="status"></div>
+
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <div>Reading both companies. This can take up to a minute.</div>
+    </div>
+
+    <div class="cmp" id="cmp"></div>
+</div>
+
+<script>
+    var companies = [];
+    var selA = null, selB = null;
+
+    fetch('/api/companies').then(function(r){ return r.json(); })
+        .then(function(d){ companies = d.companies || []; })
+        .catch(function(){});
+
+    function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function setStatus(msg, cls) { var el = document.getElementById('status'); el.textContent = msg || ''; el.className = 'status ' + (cls || ''); }
+
+    // Autocomplete wiring, generalized for both inputs
+    function wireAc(inputId, listId, setSel) {
+        var input = document.getElementById(inputId);
+        var list = document.getElementById(listId);
+        var matches = [], active = -1;
+        function render() {
+            if (!matches.length) { list.classList.remove('show'); list.innerHTML = ''; return; }
+            list.innerHTML = matches.map(function(c, i) {
+                return '<div class="ac-item' + (i === active ? ' active' : '') + '" data-t="' + c.ticker + '">'
+                     + '<span>' + esc(c.name) + '</span><span class="tk">' + c.ticker + '</span></div>';
+            }).join('');
+            list.classList.add('show');
+            Array.prototype.forEach.call(list.children, function(el) {
+                el.addEventListener('mousedown', function() { pick(el.getAttribute('data-t')); });
+            });
+        }
+        function pick(t) {
+            var c = companies.find(function(x){ return x.ticker === t; });
+            setSel(t);
+            input.value = c ? (c.name + ' (' + c.ticker + ')') : t;
+            matches = []; render();
+        }
+        input.addEventListener('input', function() {
+            var q = input.value.trim().toLowerCase(); setSel(null); active = -1;
+            if (q.length < 1 || !companies.length) { matches = []; render(); return; }
+            matches = companies.filter(function(c) {
+                return c.ticker.toLowerCase().indexOf(q) === 0 || c.name.toLowerCase().indexOf(q) !== -1;
+            }).slice(0, 8);
+            render();
+        });
+        input.addEventListener('keydown', function(e) {
+            if (!matches.length) return;
+            if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, matches.length - 1); render(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); render(); }
+            else if (e.key === 'Enter') { e.preventDefault(); if (active >= 0) pick(matches[active].ticker); }
+            else if (e.key === 'Escape') { matches = []; render(); }
+        });
+        document.addEventListener('click', function(e) { if (!e.target.closest('#' + listId) && e.target !== input) { matches = []; render(); } });
+        return function() { return { input: input }; };
+    }
+    wireAc('tickerA', 'listA', function(t){ selA = t; });
+    wireAc('tickerB', 'listB', function(t){ selB = t; });
+
+    function resolve(inputId, sel) {
+        if (sel) return sel;
+        var raw = document.getElementById(inputId).value.trim();
+        var m = raw.match(/\\(([A-Za-z.\\-]{1,6})\\)\\s*$/);
+        if (m) return m[1].toUpperCase();
+        var byName = companies.find(function(c){ return c.name.toLowerCase() === raw.toLowerCase(); });
+        if (byName) return byName.ticker;
+        return raw.toUpperCase();
+    }
+
+    async function fetchOne(ticker) {
+        var resp = await fetch('/api/analyze', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker })
+        });
+        return resp.json();
+    }
+
+    async function compare() {
+        var a = resolve('tickerA', selA), b = resolve('tickerB', selB);
+        if (!a || !b) { setStatus('Please choose two companies.', 'error'); return; }
+        if (a === b) { setStatus('Please choose two different companies.', 'error'); return; }
+
+        setStatus('');
+        document.getElementById('cmp').classList.remove('show');
+        document.getElementById('loading').classList.add('show');
+        document.getElementById('go-btn').disabled = true;
+
+        try {
+            var results = await Promise.all([fetchOne(a), fetchOne(b)]);
+            document.getElementById('loading').classList.remove('show');
+            document.getElementById('go-btn').disabled = false;
+
+            var errs = results.filter(function(r){ return r.error; });
+            if (errs.length) { setStatus(errs[0].message || 'One of the companies could not be analyzed.', 'error'); return; }
+            render(results[0], results[1]);
+        } catch (e) {
+            document.getElementById('loading').classList.remove('show');
+            document.getElementById('go-btn').disabled = false;
+            setStatus('Could not reach the server. Please try again.', 'error');
+        }
+    }
+
+    function panel(d) {
+        var hd = d.headline, vd = d.verdict || {}, f = d.fundamentals || {};
+        var hband = (f.available && f.health) ? f.health.band : null;
+        var h = '<div class="col">';
+        h += '<div class="col-head"><div class="tk">' + esc(d.ticker) + '</div>'
+           + '<div class="nm">' + esc(d.company) + '</div>'
+           + '<div class="yrs">Filings ' + esc(d.prior_year) + ' vs ' + esc(d.current_year) + '</div></div>';
+
+        // Combined verdict
+        if (vd.headline) {
+            h += '<div class="row"><div class="r-label">Combined verdict</div>'
+               + '<div class="verdict-line vt-' + (vd.tone || 'steady') + '">' + esc(vd.headline) + '</div></div>';
+        }
+        // Risk language
+        h += '<div class="row"><div class="r-label">Risk language</div>'
+           + '<div class="band band-' + hd.band + '">' + esc(hd.band) + '</div>'
+           + '<div class="subfacts">' + hd.total_count + ' total &middot; ' + hd.changed_count + ' changed &middot; ' + hd.new_count + ' new</div></div>';
+        // Financial health
+        h += '<div class="row"><div class="r-label">Financial health</div>';
+        if (hband) {
+            h += '<div class="band band-' + hband + '">' + esc(hband) + '</div>';
+            h += '<div class="nums">';
+            f.snapshot.items.forEach(function(it) {
+                var arrow = it.dir === 'up' ? '<span class="up">&#9650;</span>' : (it.dir === 'down' ? '<span class="down">&#9660;</span>' : '');
+                h += '<div class="num"><div class="n-label">' + esc(it.label) + '</div>'
+                   + '<div class="n-val">' + esc(it.value) + ' ' + arrow + '</div></div>';
+            });
+            h += '</div>';
+        } else {
+            h += '<div class="band" style="color:#94a3b8">n/a</div>';
+        }
+        h += '</div>';
+
+        h += '<a class="view-full" href="/analyze?t=' + encodeURIComponent(d.ticker) + '">View full analysis of ' + esc(d.ticker) + ' &#8594;</a>';
+        h += '</div>';
+        return h;
+    }
+
+    function render(a, b) {
+        var cmp = document.getElementById('cmp');
+        cmp.innerHTML = '<div class="cmp-grid">' + panel(a) + panel(b) + '</div>'
+            + '<div class="foot-note">An observation, not a prediction. We explore whether the patterns academic research describes show up in real companies. Not investment advice.</div>';
+        cmp.classList.add('show');
+        cmp.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+</script>
+</body>
+</html>"""
+
+
+
+# =========================================================
+# Analysis builder (shared by /api/analyze and the precompute script)
+# =========================================================
+
+def read_precomputed_analysis(ticker: str) -> Optional[Dict]:
+    """Read a precomputed analysis/TICKER.json from S3, if present."""
+    s3 = _get_s3_client()
+    if s3 is None:
+        return None
+    try:
+        obj = s3.get_object(Bucket=RISK_S3_BUCKET, Key=f"analysis/{ticker.upper()}.json")
+        return json.loads(obj['Body'].read().decode('utf-8', errors='ignore'))
+    except Exception:
+        return None
+
+
+def write_precomputed_analysis(ticker: str, result: Dict) -> bool:
+    """Store a computed analysis to analysis/TICKER.json in S3."""
+    s3 = _get_s3_client()
+    if s3 is None:
+        return False
+    try:
+        s3.put_object(
+            Bucket=RISK_S3_BUCKET, Key=f"analysis/{ticker.upper()}.json",
+            Body=json.dumps(result).encode('utf-8'),
+            ContentType='application/json',
+        )
+        return True
+    except Exception as e:
+        print(f"  [ANALYSIS] {ticker}: could not store analysis ({e}).")
+        return False
+
+
+def build_analysis(ticker: str) -> Dict:
+    """
+    Build the full Option A analysis for a ticker from the two most recent
+    years stored in S3. Returns the result dict, or a dict with an 'error'
+    key (not_in_list / one_year_only / read_failed / server_error). Shared by
+    the web endpoint and the precompute batch script so their output matches.
+    """
+    ticker = str(ticker or '').strip().upper()
+    if not ticker:
+        return {'error': 'no_ticker', 'message': 'No ticker provided.'}
+
+    years = list_s3_years_for_ticker(ticker)
+    if not years:
+        return {'error': 'not_in_list',
+                'message': (f"We do not have {ticker} in our data. This tool covers "
+                            f"S&P 500 companies as of 30 August 2026 only.")}
+    if len(years) < 2:
+        return {'error': 'one_year_only',
+                'message': (f"We only have one year of filings for {ticker} so far "
+                            f"({years[0]}). A year over year comparison needs two.")}
+
+    current_year, prior_year = years[0], years[1]
+    company = get_company_name_from_s3(ticker, current_year)
+
+    current_text = read_s3_risk_text(ticker, current_year)
+    prior_text = read_s3_risk_text(ticker, prior_year)
+    if not current_text or not prior_text:
+        return {'error': 'read_failed',
+                'message': f"We could not read the stored filings for {ticker}. Please try again."}
+
+    clean_current = clean_text_preserve_structure(current_text)
+    clean_prior = clean_text_preserve_structure(prior_text)
+    sections_current = parse_risk_sections(clean_current)
+    sections_prior = parse_risk_sections(clean_prior)
+    matches = match_risk_categories(sections_current, sections_prior)
+    change_report = classify_risk_changes(
+        matches=matches, ticker=ticker,
+        current_year=current_year, prior_year=prior_year,
+        total_current=len(sections_current), total_prior=len(sections_prior),
+    )
+    scoring = run_scoring(change_report, verbose=False)
+
+    def _unc_obj(card, classification):
+        body = ''
+        if classification is not None:
+            body = getattr(classification, 'current_body', '') or getattr(classification, 'prior_body', '') or ''
+        title = card['title'].strip()
+        if not title:
+            snippet = body.strip().split('. ')[0][:80]
+            title = (snippet + '...') if snippet else 'Untitled risk'
+        return {'title': title, 'body': body[:6000]}
+
+    changed, removed, unchanged = [], [], []
+    for i, r in enumerate(scoring.risk_scores):
+        classification = change_report.classifications[i] if i < len(change_report.classifications) else None
+        card = serialize_risk(r, classification)
+        if r.status == RiskChangeStatus.UNCHANGED:
+            unchanged.append(_unc_obj(card, classification))
+        elif r.status == RiskChangeStatus.REMOVED:
+            removed.append(_unc_obj(card, classification))
+        else:
+            changed.append(card)
+
+    changed.sort(key=lambda c: c['score'], reverse=True)
+    headline = build_headline(scoring, current_year, prior_year)
+
+    try:
+        cik = get_company_cik(ticker)
+        fundamentals = get_fundamentals_cached(cik, ticker) if cik else {'available': False}
+    except Exception as e:
+        print(f"  [ANALYSIS] {ticker}: fundamentals error {e}")
+        fundamentals = {'available': False}
+
+    verdict = build_combined_verdict(headline, fundamentals)
+
+    return {
+        'ticker': ticker, 'company': company,
+        'current_year': current_year, 'prior_year': prior_year,
+        'headline': headline, 'verdict': verdict,
+        'risks': changed, 'removed': removed, 'unchanged': unchanged,
+        'fundamentals': fundamentals,
+    }
+
+
 # =========================================================
 # HTTP Handler
 # =========================================================
@@ -3381,6 +3819,8 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             self._serve_html(HOME_PAGE)
         elif path == '/analyze':
             self._serve_html(ANALYZE_PAGE)
+        elif path == '/compare':
+            self._serve_html(COMPARE_PAGE)
         elif path == '/api/lookup':
             self._handle_lookup(parsed)
         elif path == '/api/companies':
@@ -3473,107 +3913,21 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             data = json.loads(body)
             ticker = str(data.get('ticker', '')).strip().upper()
             if not ticker:
-                self._serve_json({'error': 'No ticker provided.'})
+                self._serve_json({'error': 'no_ticker', 'message': 'No ticker provided.'})
                 return
 
-            print(f"  [ANALYZE] {ticker}: discovering years in S3...")
-            years = list_s3_years_for_ticker(ticker)
-
-            if not years:
-                self._serve_json({
-                    'error': 'not_in_list',
-                    'message': (
-                        f"We do not have {ticker} in our data. This tool covers "
-                        f"S&P 500 companies as of 30 August 2026 only."
-                    ),
-                })
+            # Fast path: serve a precomputed analysis if one exists in S3.
+            cached = read_precomputed_analysis(ticker)
+            if cached and not cached.get('error'):
+                print(f"  [ANALYZE] {ticker}: served precomputed analysis from S3.")
+                self._serve_json(cached)
                 return
 
-            if len(years) < 2:
-                self._serve_json({
-                    'error': 'one_year_only',
-                    'message': (
-                        f"We only have one year of filings for {ticker} so far "
-                        f"({years[0]}). A year over year comparison needs two."
-                    ),
-                })
-                return
-
-            current_year, prior_year = years[0], years[1]
-            company = get_company_name_from_s3(ticker, current_year)
-            print(f"  [ANALYZE] {ticker}: comparing {current_year} vs {prior_year}")
-
-            current_text = read_s3_risk_text(ticker, current_year)
-            prior_text = read_s3_risk_text(ticker, prior_year)
-            if not current_text or not prior_text:
-                self._serve_json({
-                    'error': 'read_failed',
-                    'message': f"We could not read the stored filings for {ticker}. Please try again.",
-                })
-                return
-
-            # ─── Run the risk pipeline (live) ───
-            clean_current = clean_text_preserve_structure(current_text)
-            clean_prior = clean_text_preserve_structure(prior_text)
-            sections_current = parse_risk_sections(clean_current)
-            sections_prior = parse_risk_sections(clean_prior)
-            matches = match_risk_categories(sections_current, sections_prior)
-            change_report = classify_risk_changes(
-                matches=matches, ticker=ticker,
-                current_year=current_year, prior_year=prior_year,
-                total_current=len(sections_current),
-                total_prior=len(sections_prior),
-            )
-            scoring = run_scoring(change_report, verbose=False)
-
-            # ─── Serialize into Option A shape ───
-            def _unc_obj(card, classification):
-                body = ''
-                if classification is not None:
-                    body = getattr(classification, 'current_body', '') or getattr(classification, 'prior_body', '') or ''
-                title = card['title'].strip()
-                if not title:
-                    snippet = body.strip().split('. ')[0][:80]
-                    title = (snippet + '...') if snippet else 'Untitled risk'
-                return {'title': title, 'body': body[:6000]}
-
-            changed, removed, unchanged = [], [], []
-            for i, r in enumerate(scoring.risk_scores):
-                classification = change_report.classifications[i] if i < len(change_report.classifications) else None
-                card = serialize_risk(r, classification)
-                if r.status == RiskChangeStatus.UNCHANGED:
-                    unchanged.append(_unc_obj(card, classification))
-                elif r.status == RiskChangeStatus.REMOVED:
-                    removed.append(_unc_obj(card, classification))
-                else:
-                    changed.append(card)   # NEW and MODIFIED (Rewritten)
-
-            changed.sort(key=lambda c: c['score'], reverse=True)
-            headline = build_headline(scoring, current_year, prior_year)
-
-            # ─── Numbers lens (5-year fundamentals, cache-aside from S3) ───
-            try:
-                cik = get_company_cik(ticker)
-                fundamentals = get_fundamentals_cached(cik, ticker) if cik else {'available': False}
-            except Exception as e:
-                print(f"  [ANALYZE] {ticker}: fundamentals error {e}")
-                fundamentals = {'available': False}
-
-            verdict = build_combined_verdict(headline, fundamentals)
-
-            result = {
-                'ticker': ticker,
-                'company': company,
-                'current_year': current_year,
-                'prior_year': prior_year,
-                'headline': headline,
-                'verdict': verdict,
-                'risks': changed,
-                'removed': removed,
-                'unchanged': unchanged,
-                'fundamentals': fundamentals,
-            }
-            print(f"  [ANALYZE] {ticker}: done, {len(changed)} changed risks, {len(unchanged)} unchanged.")
+            # Otherwise compute live (and store for next time if writable).
+            print(f"  [ANALYZE] {ticker}: computing live...")
+            result = build_analysis(ticker)
+            if not result.get('error'):
+                write_precomputed_analysis(ticker, result)
             self._serve_json(result)
 
         except Exception as e:
