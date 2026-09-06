@@ -3487,6 +3487,11 @@ COMPARE_PAGE = """<!DOCTYPE html>
     .h2h-side.win { background: #ecfdf5; }
     .h2h-latest { font-size: 12.5px; font-weight: 700; color: var(--ink); }
     .h2h-verdict { font-size: 12.5px; font-weight: 600; color: #334155; text-align: right; }
+    .h2h-verdict.win-a { color: #2563eb; font-weight: 700; }
+    .h2h-verdict.win-b { color: #0d9488; font-weight: 700; }
+    .win-a { color: #2563eb; font-weight: 800; }
+    .win-b { color: #0d9488; font-weight: 800; }
+    .h2h-tally { font-size: 15px; font-weight: 700; color: var(--ink); background: var(--bg-alt); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 4px 0 6px; }
     .mini-spark { display: flex; align-items: flex-end; gap: 2px; height: 26px; width: 62px; flex-shrink: 0; }
     .mini-spark .mb { flex: 1; border-radius: 1px; min-height: 2px; position: relative; }
     .mini-spark .mb .mb-tip { display: none; position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%); background: var(--navy); color: #e2e8f0; font-size: 11px; padding: 4px 7px; border-radius: 6px; white-space: nowrap; z-index: 30; }
@@ -3747,25 +3752,25 @@ COMPARE_PAGE = """<!DOCTYPE html>
             return '<div class="foot-note">A head-to-head on the numbers needs financial data for both companies. It was not available for at least one.</div>';
         }
         var tallyA = 0, tallyB = 0, close = 0;
-        var h = '<div class="h2h"><div class="h2h-title">Head to head, who is trending better</div>';
-        h += '<div class="h2h-sub">Judged on the five-year trajectory and stability of each metric, not on which company is bigger. Hover any bar for the yearly value.</div>';
 
+        // Build the metric rows first so we can put the overall tally on top.
+        var rows = '';
         // Column header so each sparkline column is clearly labeled by company.
-        h += '<div class="h2h-head">';
-        h += '  <div class="h2h-metric">Metric</div>';
-        h += '  <div class="h2h-colname a">' + esc(a.ticker) + '</div>';
-        h += '  <div class="h2h-colname b">' + esc(b.ticker) + '</div>';
-        h += '  <div class="h2h-verdict">Trending better</div>';
-        h += '</div>';
+        rows += '<div class="h2h-head">';
+        rows += '  <div class="h2h-metric">Metric</div>';
+        rows += '  <div class="h2h-colname a">' + esc(a.ticker) + '</div>';
+        rows += '  <div class="h2h-colname b">' + esc(b.ticker) + '</div>';
+        rows += '  <div class="h2h-verdict">Trending better</div>';
+        rows += '</div>';
 
         fa.groups.forEach(function(g) {
-            h += '<div class="h2h-group">' + esc(g.name) + '</div>';
+            rows += '<div class="h2h-group">' + esc(g.name) + '</div>';
             g.metrics.forEach(function(ma) {
                 var mb = fb.byKey[ma.key];
                 if (!mb) return;
                 var ta = trend(ma.series, ma.higher_better);
                 var tb = trend(mb.series, mb.higher_better);
-                var verdict = '', winner = '';
+                var verdict = '', winner = '', vclass = '';
                 if (ta && tb) {
                     var diff = ta.dirScore - tb.dirScore;
                     if (Math.abs(diff) < 0.02) {
@@ -3776,20 +3781,31 @@ COMPARE_PAGE = """<!DOCTYPE html>
                     } else if (diff > 0) { winner = 'a'; verdict = esc(a.ticker) + ' is trending better'; tallyA++; }
                     else { winner = 'b'; verdict = esc(b.ticker) + ' is trending better'; tallyB++; }
                 } else { verdict = 'Not enough data'; }
+                // Color the verdict to match the winning company (blue A, teal B).
+                vclass = winner === 'a' ? ' win-a' : (winner === 'b' ? ' win-b' : '');
 
-                h += '<div class="h2h-row">';
-                h += '  <div class="h2h-metric">' + esc(ma.label) + '</div>';
-                h += '  <div class="h2h-side' + (winner === 'a' ? ' win' : '') + '">' + sparkMini(ma.series, '#2563eb')
-                   + '<span class="h2h-latest">' + esc(ma.latest_display) + '</span></div>';
-                h += '  <div class="h2h-side' + (winner === 'b' ? ' win' : '') + '">' + sparkMini(mb.series, '#0d9488')
-                   + '<span class="h2h-latest">' + esc(mb.latest_display) + '</span></div>';
-                h += '  <div class="h2h-verdict">' + verdict + '</div>';
-                h += '</div>';
+                rows += '<div class="h2h-row">';
+                rows += '  <div class="h2h-metric">' + esc(ma.label) + '</div>';
+                rows += '  <div class="h2h-side' + (winner === 'a' ? ' win' : '') + '">' + sparkMini(ma.series, '#2563eb')
+                     + '<span class="h2h-latest">' + esc(ma.latest_display) + '</span></div>';
+                rows += '  <div class="h2h-side' + (winner === 'b' ? ' win' : '') + '">' + sparkMini(mb.series, '#0d9488')
+                     + '<span class="h2h-latest">' + esc(mb.latest_display) + '</span></div>';
+                rows += '  <div class="h2h-verdict' + vclass + '">' + verdict + '</div>';
+                rows += '</div>';
             });
         });
 
-        h += '<div class="h2h-tally">' + esc(a.ticker) + ' trending better on ' + tallyA
-           + ', ' + esc(b.ticker) + ' on ' + tallyB + ', ' + close + ' about even.</div>';
+        // Overall tally, colored, shown at the top as the headline takeaway.
+        var leadClass = tallyA > tallyB ? 'win-a' : (tallyB > tallyA ? 'win-b' : '');
+        var tally = '<div class="h2h-tally ' + leadClass + '">'
+            + '<span class="win-a">' + esc(a.ticker) + '</span> trending better on ' + tallyA
+            + ', <span class="win-b">' + esc(b.ticker) + '</span> on ' + tallyB
+            + ', ' + close + ' about even.</div>';
+
+        var h = '<div class="h2h"><div class="h2h-title">Head to head, who is trending better</div>';
+        h += '<div class="h2h-sub">Judged on the five-year trajectory and stability of each metric, not on which company is bigger. Hover any bar for the yearly value.</div>';
+        h += tally;
+        h += rows;
         h += '</div>';
         return h;
     }
