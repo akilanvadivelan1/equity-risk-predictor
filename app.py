@@ -2748,7 +2748,8 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .tone-key b { color: var(--navy); }
 
     .chip-counts { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 16px; }
-    .chip-count { font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 999px; }
+    .chip-count { font-family: inherit; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 999px; border: 1px solid transparent; cursor: pointer; transition: filter 0.12s, transform 0.12s; }
+    .chip-count:hover { filter: brightness(0.95); transform: translateY(-1px); }
     .chip-count.new { background: #fef2f2; color: #dc2626; }
     .chip-count.rewritten { background: #fff7ed; color: #c2410c; }
     .chip-count.removed { background: #f1f5f9; color: #64748b; }
@@ -3069,18 +3070,24 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '  </div>';
         html += '</details>';
 
-        // Count chips
+        // Count chips (clickable, jump to the first item of that type)
         var chips = '';
-        if (hd.new_count) chips += '<span class="chip-count new">' + hd.new_count + ' New</span>';
-        if (hd.modified_count) chips += '<span class="chip-count rewritten">' + hd.modified_count + ' Rewritten</span>';
-        if (hd.removed_count) chips += '<span class="chip-count removed">' + hd.removed_count + ' Removed</span>';
-        if (hd.unchanged_count) chips += '<span class="chip-count unchanged">' + hd.unchanged_count + ' Unchanged</span>';
+        if (hd.new_count) chips += '<button class="chip-count new" onclick="jumpToKind(\\'new\\')">' + hd.new_count + ' New</button>';
+        if (hd.modified_count) chips += '<button class="chip-count rewritten" onclick="jumpToKind(\\'rewritten\\')">' + hd.modified_count + ' Rewritten</button>';
+        if (hd.removed_count) chips += '<button class="chip-count removed" onclick="jumpToKind(\\'removed\\')">' + hd.removed_count + ' Removed</button>';
+        if (hd.unchanged_count) chips += '<button class="chip-count unchanged" onclick="jumpToKind(\\'unchanged\\')">' + hd.unchanged_count + ' Unchanged</button>';
         if (chips) html += '<div class="chip-counts">' + chips + '</div>';
 
-        // New + Rewritten: open, sorted by score (the signal)
+        // New + Rewritten: open, sorted by score (the signal). Tag the first of each.
         if (data.risks.length) {
             html += '<div class="group-label">What changed &middot; new and rewritten risks</div>';
-            data.risks.forEach(function(r) { html += renderCard(r); });
+            var seenNew = false, seenRew = false;
+            data.risks.forEach(function(r) {
+                var anchor = '';
+                if (r.status === 'NEW' && !seenNew) { anchor = 'first-new'; seenNew = true; }
+                else if (r.status === 'MODIFIED' && !seenRew) { anchor = 'first-rewritten'; seenRew = true; }
+                html += renderCard(r, anchor);
+            });
         } else {
             html += '<div class="card"><div class="note">No new or rewritten risks were detected between these two years. Most of the filing is unchanged.</div></div>';
         }
@@ -3088,7 +3095,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         // Removed: collapsed
         var rem = data.removed || [];
         if (rem.length) {
-            html += '<details class="unchanged"><summary>' + rem.length + ' risk' + (rem.length === 1 ? '' : 's') + ' removed from last year</summary>';
+            html += '<details class="unchanged" id="sec-removed"><summary>' + rem.length + ' risk' + (rem.length === 1 ? '' : 's') + ' removed from last year</summary>';
             html += '<div class="unchanged-note">These appeared last year but are gone this year. That can mean the risk eased, or that it is being downplayed. Click any to read the prior text.</div>';
             rem.forEach(function(u) {
                 html += '<details class="unc-item"><summary>' + esc(u.title) + '</summary>'
@@ -3100,7 +3107,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         // Unchanged: collapsed
         var unc = data.unchanged || [];
         if (unc.length) {
-            html += '<details class="unchanged"><summary>' + unc.length + ' risks unchanged from last year (no signal)</summary>';
+            html += '<details class="unchanged" id="sec-unchanged"><summary>' + unc.length + ' risks unchanged from last year (no signal)</summary>';
             html += '<div class="unchanged-note">These use the same language as last year, so there is no change signal. Click any to read the full text.</div>';
             unc.forEach(function(u) {
                 html += '<details class="unc-item"><summary>' + esc(u.title) + '</summary>'
@@ -3127,10 +3134,11 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         window.scrollTo({ top: top, behavior: 'smooth' });
     }
 
-    function renderCard(r) {
+    function renderCard(r, anchor) {
         var chipClass = r.status === 'NEW' ? 'new' : (r.status === 'MODIFIED' ? 'rewritten' : 'removed');
         var toneBand = r.tone_label;
-        var h = '<div class="card">';
+        var idAttr = anchor ? (' id="' + anchor + '"') : '';
+        var h = '<div class="card"' + idAttr + '>';
         h += '  <div class="top">';
         h += '    <div><span class="chip ' + chipClass + '">' + esc(r.status_label) + '</span><div class="title">' + esc(r.title) + '</div></div>';
         h += '    <div class="score"><div class="n band-' + toneBand + '">' + r.score + '</div><div class="of">out of 100</div></div>';
@@ -3259,6 +3267,17 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         if (!el) return;
         var top = el.getBoundingClientRect().top + window.pageYOffset - 72;
         window.scrollTo({ top: top, behavior: 'smooth' });
+    }
+
+    function jumpToKind(kind) {
+        // New / Rewritten jump to the first such card; Removed / Unchanged
+        // open their collapsed section, then scroll to it.
+        if (kind === 'new') { jumpTo('first-new'); return; }
+        if (kind === 'rewritten') { jumpTo('first-rewritten'); return; }
+        var secId = (kind === 'removed') ? 'sec-removed' : 'sec-unchanged';
+        var sec = document.getElementById(secId);
+        if (sec) { sec.setAttribute('open', 'open'); }
+        jumpTo(secId);
     }
 
     function toggleYear(id) {
