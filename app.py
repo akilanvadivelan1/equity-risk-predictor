@@ -2673,23 +2673,25 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
     /* Two-lens summary row: side by side on desktop, stacked on mobile */
     .lens-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 8px; }
-    .sbox { display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 22px 24px; box-shadow: var(--shadow); transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s; border-top: 4px solid var(--accent); }
+    .sbox { display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 15px 18px; box-shadow: var(--shadow); transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s; border-top: 4px solid var(--accent); }
     .sbox.numbers { border-top-color: #0d9488; }
     .sbox:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(15,23,42,0.10); }
-    .sbox-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-    .sbox-lbl { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); }
+    .sbox-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .sbox-lbl { font-size: 11.5px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); }
     .sbox.words .sbox-lbl { color: var(--accent); }
     .sbox.numbers .sbox-lbl { color: #0d9488; }
     .sbox-go { font-size: 12px; font-weight: 700; color: var(--slate); }
     .sbox:hover .sbox-go { color: var(--ink); }
-    .sbox-facts { display: flex; gap: 16px; margin-top: 14px; flex-wrap: wrap; }
-    .sbox-facts .fact { font-size: 13px; color: var(--slate); }
-    .sbox-facts .fn { font-size: 17px; font-weight: 800; color: var(--ink); margin-right: 3px; }
-    .sbox-new { margin-top: 12px; font-size: 13.5px; font-weight: 700; color: var(--red); }
+    .sbox .band { font-size: 20px; font-weight: 800; letter-spacing: -0.4px; text-transform: capitalize; margin-bottom: 8px; }
+    .sbox .meter { margin-bottom: 10px; }
+    .sbox-facts { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
+    .sbox-facts .fact { font-size: 12.5px; color: var(--slate); }
+    .sbox-facts .fn { font-size: 15px; font-weight: 800; color: var(--ink); margin-right: 3px; }
+    .sbox-new { margin-top: 8px; font-size: 12.5px; font-weight: 700; color: var(--red); }
     .sbox-new.muted { color: var(--slate); font-weight: 500; }
-    .sbox-nums { display: flex; gap: 18px; margin-top: 14px; flex-wrap: wrap; }
-    .snum .sn-label { font-size: 11px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.3px; }
-    .snum .sn-val { font-size: 16px; font-weight: 800; color: var(--ink); margin-top: 2px; }
+    .sbox-nums { display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; }
+    .snum .sn-label { font-size: 10.5px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.3px; }
+    .snum .sn-val { font-size: 15px; font-weight: 800; color: var(--ink); margin-top: 1px; }
     .snum .sn-val .up { color: #15803d; font-size: 11px; }
     .snum .sn-val .down { color: #dc2626; font-size: 11px; }
     .snum .sn-yoy { font-size: 12px; font-weight: 600; color: var(--slate); }
@@ -2735,13 +2737,24 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .legend { margin-top: 10px; font-size: 12px; color: var(--slate); }
     .legend .w-neg, .legend .w-unc { font-weight: 600; }
 
-    .tone-key { background: var(--accent-soft); border-radius: 12px; padding: 16px 18px; font-size: 13px; color: #1e3a5f; line-height: 1.6; margin-bottom: 22px; }
+    .tone-key { background: var(--accent-soft); border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; }
+    .tone-key > summary { cursor: pointer; font-size: 13.5px; font-weight: 700; color: #1e3a5f; list-style: none; }
+    .tone-key > summary::-webkit-details-marker { display: none; }
+    .tone-key > summary::before { content: "\\25B8 "; color: var(--accent); }
+    .tone-key[open] > summary::before { content: "\\25BE "; }
+    .tone-key-body { margin-top: 10px; font-size: 13px; color: #1e3a5f; line-height: 1.6; }
+    .tone-key-body p { margin-bottom: 8px; }
     .tone-key b { color: var(--navy); }
 
     .unchanged { margin-top: 18px; }
-    .unchanged summary { cursor: pointer; color: var(--slate); font-size: 14px; font-weight: 600; }
-    .unchanged ul { margin: 12px 0 0 4px; list-style: none; }
-    .unchanged li { color: var(--slate); font-size: 13px; padding: 4px 0; }
+    .unchanged > summary { cursor: pointer; color: var(--slate); font-size: 14px; font-weight: 600; }
+    .unchanged-note { font-size: 12.5px; color: var(--slate); margin: 8px 0 4px; }
+    .unc-item { border-top: 1px solid var(--line); }
+    .unc-item > summary { cursor: pointer; color: var(--ink); font-size: 13.5px; font-weight: 600; padding: 9px 0; list-style: none; }
+    .unc-item > summary::-webkit-details-marker { display: none; }
+    .unc-item > summary::before { content: "\\25B8 "; color: var(--slate); }
+    .unc-item[open] > summary::before { content: "\\25BE "; }
+    .unc-body { font-size: 13px; color: #475569; line-height: 1.7; padding: 4px 0 12px; white-space: pre-wrap; }
 
     .foot-note { margin-top: 26px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--slate); line-height: 1.6; text-align: center; }
 
@@ -3039,21 +3052,28 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '  <div class="sec-sub">What the annual report (10-K) says about the risks the company faces, and how the wording changed from ' + esc(data.prior_year) + ' to ' + esc(data.current_year) + '.</div>';
         html += '</div>';
 
-        html += '<div class="tone-key">';
-        html += '  <b>How to read tone.</b> Negative words describe harm, decline, or failure (adverse, impair, loss). ';
-        html += '  Uncertainty words are hedging language a company uses when it is unsure (may, could, uncertain). ';
-        html += '  More of these, especially more than last year, means the tone is darkening. That is the warning the research points to.';
-        html += '</div>';
+        html += '<details class="tone-key">';
+        html += '  <summary>How is tone calculated, and how do I read it?</summary>';
+        html += '  <div class="tone-key-body">';
+        html += '    <p><b>How it is calculated.</b> We use the Loughran and McDonald finance word lists to count two kinds of words in the changed text: negative words (harm, decline, failure, such as adverse, impair, loss) and uncertainty words (hedging language, such as may, could, uncertain). The more of these words, as a share of the section, and the more they rose versus last year, the higher the tone score.</p>';
+        html += '    <p><b>How to read it.</b> A higher, darker tone means the company is describing this risk in more negative and less certain language than before. That shift is the early warning the research points to. It is a signal to look closer, not a prediction.</p>';
+        html += '  </div>';
+        html += '</details>';
 
         if (data.risks.length) {
             data.risks.forEach(function(r) { html += renderCard(r); });
         } else {
             html += '<div class="card"><div class="note">No changed risks were detected between these two years. Most of the filing is unchanged.</div></div>';
         }
-        if (data.unchanged_titles && data.unchanged_titles.length) {
-            html += '<details class="unchanged"><summary>' + data.unchanged_titles.length + ' risks unchanged from last year (no signal)</summary><ul>';
-            data.unchanged_titles.forEach(function(t) { html += '<li>' + esc(t) + '</li>'; });
-            html += '</ul></details>';
+        var unc = data.unchanged || [];
+        if (unc.length) {
+            html += '<details class="unchanged"><summary>' + unc.length + ' risks unchanged from last year (no signal)</summary>';
+            html += '<div class="unchanged-note">These use the same language as last year, so there is no change signal. Click any to read the full text.</div>';
+            unc.forEach(function(u, i) {
+                html += '<details class="unc-item"><summary>' + esc(u.title) + '</summary>'
+                     +  '<div class="unc-body">' + esc(u.body || 'No text available.') + '</div></details>';
+            });
+            html += '</details>';
         }
 
         // ══════════ SECTION 2: FINANCIAL HEALTH ══════════
@@ -3386,7 +3406,16 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 classification = change_report.classifications[i] if i < len(change_report.classifications) else None
                 card = serialize_risk(r, classification)
                 if r.status == RiskChangeStatus.UNCHANGED:
-                    unchanged.append(card['title'])
+                    body = ''
+                    if classification is not None:
+                        body = getattr(classification, 'current_body', '') or getattr(classification, 'prior_body', '') or ''
+                    title = card['title'].strip()
+                    if not title:
+                        # Fall back to the first sentence of the body when the parser
+                        # produced no title.
+                        snippet = body.strip().split('. ')[0][:80]
+                        title = (snippet + '...') if snippet else 'Untitled risk'
+                    unchanged.append({'title': title, 'body': body[:6000]})
                 else:
                     changed.append(card)
 
@@ -3408,7 +3437,7 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 'prior_year': prior_year,
                 'headline': headline,
                 'risks': changed,
-                'unchanged_titles': unchanged,
+                'unchanged': unchanged,
                 'fundamentals': fundamentals,
             }
             print(f"  [ANALYZE] {ticker}: done, {len(changed)} changed risks, {len(unchanged)} unchanged.")
