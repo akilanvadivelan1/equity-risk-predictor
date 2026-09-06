@@ -992,6 +992,7 @@ def build_fundamentals(cik: str, ticker: str) -> Dict:
                 'latest_display': _fmt_value(mk, smap.get(latest_year)) if latest_year else 'n/a',
                 'verdict': vlabel,
                 'tone': tone,
+                'higher_better': mk not in _HIGHER_IS_WORSE,
                 'series': series_list,
                 'spark': spark,
                 'components': components,
@@ -3469,11 +3470,30 @@ COMPARE_PAGE = """<!DOCTYPE html>
 
     .foot-note { margin-top: 24px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--slate); line-height: 1.6; text-align: center; }
 
+    /* Head-to-head */
+    .h2h { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); margin-top: 18px; }
+    .h2h-title { font-size: 18px; font-weight: 800; color: var(--ink); }
+    .h2h-sub { font-size: 13px; color: var(--slate); line-height: 1.55; margin: 6px 0 12px; }
+    .h2h-group { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--teal); margin: 16px 0 6px; }
+    .h2h-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1.4fr; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+    .h2h-metric { font-size: 14px; font-weight: 700; color: var(--ink); }
+    .h2h-side { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; }
+    .h2h-side.win { background: #ecfdf5; }
+    .h2h-latest { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+    .h2h-verdict { font-size: 12.5px; font-weight: 600; color: #334155; text-align: right; }
+    .mini-spark { display: flex; align-items: flex-end; gap: 2px; height: 26px; width: 62px; flex-shrink: 0; }
+    .mini-spark .mb { flex: 1; border-radius: 1px; min-height: 2px; position: relative; }
+    .mini-spark .mb .mb-tip { display: none; position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%); background: var(--navy); color: #e2e8f0; font-size: 11px; padding: 4px 7px; border-radius: 6px; white-space: nowrap; z-index: 30; }
+    .mini-spark .mb:hover .mb-tip { display: block; }
+
     @media (max-width: 720px) {
         .menu { display: none; }
         .pickers { grid-template-columns: 1fr; }
         .vs { display: none; }
         .cmp-grid { grid-template-columns: 1fr; }
+        .h2h-row { grid-template-columns: 1fr 1fr; }
+        .h2h-metric { grid-column: 1 / -1; }
+        .h2h-verdict { grid-column: 1 / -1; text-align: left; }
     }
 </style>
 </head>
@@ -3674,10 +3694,94 @@ COMPARE_PAGE = """<!DOCTYPE html>
         return h;
     }
 
+    // ---- Head-to-head, judged on trajectory (YoY direction) and stability ----
+    function trend(series, higherBetter) {
+        // Returns {slope, stability, cagr} from the numeric 5-year series.
+        var nums = series.map(function(s){ return s.value; }).filter(function(v){ return v !== null && v !== undefined; });
+        if (nums.length < 2) return null;
+        var first = nums[0], last = nums[nums.length - 1];
+        // Direction score: percent change end vs start, sign flipped if lower is better.
+        var base = Math.abs(first) || 1;
+        var change = (last - first) / base;
+        var dirScore = higherBetter ? change : -change;
+        // Stability: average absolute year-over-year step relative to scale (smaller = steadier).
+        var steps = 0, n = 0;
+        for (var i = 1; i < nums.length; i++) { steps += Math.abs(nums[i] - nums[i-1]); n++; }
+        var scale = (Math.max.apply(null, nums.map(Math.abs)) || 1);
+        var volatility = n ? (steps / n) / scale : 0;
+        return { dirScore: dirScore, volatility: volatility, change: change };
+    }
+
+    function sparkMini(series, color) {
+        var nums = series.map(function(s){ return s.value; }).filter(function(v){ return v !== null && v !== undefined; });
+        if (!nums.length) return '<div class="mini-spark"></div>';
+        var min = Math.min.apply(null, nums), max = Math.max.apply(null, nums), range = (max - min) || 1;
+        var bars = series.map(function(s) {
+            if (s.value === null || s.value === undefined) return '<div class="mb" style="height:2px;opacity:0.3"></div>';
+            var h = Math.max(Math.round(((s.value - min) / range) * 100), 8);
+            return '<div class="mb" style="height:' + h + '%;background:' + color + '">'
+                 + '<span class="mb-tip">FY' + s.year + ': ' + esc(s.display) + '</span></div>';
+        }).join('');
+        return '<div class="mini-spark">' + bars + '</div>';
+    }
+
+    function metricMap(f) {
+        // Flatten fundamentals.groups into {key: {label, tooltip, series, higher_better, latest_display}}
+        var out = {}, groups = (f && f.available) ? f.groups : [];
+        groups.forEach(function(g){ g.metrics.forEach(function(m){ out[m.key] = m; }); });
+        return { groups: groups, byKey: out };
+    }
+
+    function headToHead(a, b) {
+        var fa = metricMap(a.fundamentals), fb = metricMap(b.fundamentals);
+        if (!fa.groups.length || !fb.groups.length) {
+            return '<div class="foot-note">A head-to-head on the numbers needs financial data for both companies. It was not available for at least one.</div>';
+        }
+        var tallyA = 0, tallyB = 0, close = 0;
+        var h = '<div class="h2h"><div class="h2h-title">Head to head, who is trending better</div>';
+        h += '<div class="h2h-sub">Judged on the five-year trajectory and stability of each metric, not on which company is bigger. Hover any bar for the yearly value.</div>';
+
+        fa.groups.forEach(function(g) {
+            h += '<div class="h2h-group">' + esc(g.name) + '</div>';
+            g.metrics.forEach(function(ma) {
+                var mb = fb.byKey[ma.key];
+                if (!mb) return;
+                var ta = trend(ma.series, ma.higher_better);
+                var tb = trend(mb.series, mb.higher_better);
+                var verdict = '', winner = '';
+                if (ta && tb) {
+                    var diff = ta.dirScore - tb.dirScore;
+                    if (Math.abs(diff) < 0.02) {
+                        // trajectories close; break tie on stability
+                        if (Math.abs(ta.volatility - tb.volatility) < 0.02) { verdict = 'About the same'; close++; }
+                        else if (ta.volatility < tb.volatility) { winner = 'a'; verdict = esc(a.ticker) + ' is steadier'; tallyA++; }
+                        else { winner = 'b'; verdict = esc(b.ticker) + ' is steadier'; tallyB++; }
+                    } else if (diff > 0) { winner = 'a'; verdict = esc(a.ticker) + ' is trending better'; tallyA++; }
+                    else { winner = 'b'; verdict = esc(b.ticker) + ' is trending better'; tallyB++; }
+                } else { verdict = 'Not enough data'; }
+
+                h += '<div class="h2h-row">';
+                h += '  <div class="h2h-metric">' + esc(ma.label) + '</div>';
+                h += '  <div class="h2h-side' + (winner === 'a' ? ' win' : '') + '">' + sparkMini(ma.series, '#2563eb')
+                   + '<span class="h2h-latest">' + esc(ma.latest_display) + '</span></div>';
+                h += '  <div class="h2h-side' + (winner === 'b' ? ' win' : '') + '">' + sparkMini(mb.series, '#0d9488')
+                   + '<span class="h2h-latest">' + esc(mb.latest_display) + '</span></div>';
+                h += '  <div class="h2h-verdict">' + verdict + '</div>';
+                h += '</div>';
+            });
+        });
+
+        h += '<div class="h2h-tally">' + esc(a.ticker) + ' trending better on ' + tallyA
+           + ', ' + esc(b.ticker) + ' on ' + tallyB + ', ' + close + ' about even.</div>';
+        h += '</div>';
+        return h;
+    }
+
     function render(a, b) {
         var cmp = document.getElementById('cmp');
         cmp.innerHTML = '<div class="cmp-grid">' + panel(a) + panel(b) + '</div>'
-            + '<div class="foot-note">An observation, not a prediction. We explore whether the patterns academic research describes show up in real companies. Not investment advice.</div>';
+            + headToHead(a, b)
+            + '<div class="foot-note">An observation, not a prediction. We compare the trajectory and stability of each company\\'s numbers, not their size. Not investment advice.</div>';
         cmp.classList.add('show');
         cmp.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
