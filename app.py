@@ -1765,6 +1765,7 @@ def build_headline(scoring, current_year: int, prior_year: int) -> Dict:
     new_count = sum(1 for r in risks if r.status == RiskChangeStatus.NEW)
     modified_count = sum(1 for r in risks if r.status == RiskChangeStatus.MODIFIED)
     unchanged_count = sum(1 for r in risks if r.status == RiskChangeStatus.UNCHANGED)
+    removed_count = sum(1 for r in risks if r.status == RiskChangeStatus.REMOVED)
 
     # Overall band from the average tone of changed risks, plus new-risk pressure.
     changed = [r for r in risks if r.status in (RiskChangeStatus.NEW, RiskChangeStatus.MODIFIED)]
@@ -1809,7 +1810,7 @@ def build_headline(scoring, current_year: int, prior_year: int) -> Dict:
     return {'band': band, 'score': overall, 'summary': summary,
             'new_count': new_count, 'modified_count': modified_count,
             'unchanged_count': unchanged_count, 'changed_count': changed_count,
-            'total_count': total_count}
+            'removed_count': removed_count, 'total_count': total_count}
 
 
 
@@ -2746,6 +2747,14 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .tone-key-body p { margin-bottom: 8px; }
     .tone-key b { color: var(--navy); }
 
+    .chip-counts { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 16px; }
+    .chip-count { font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 999px; }
+    .chip-count.new { background: #fef2f2; color: #dc2626; }
+    .chip-count.rewritten { background: #fff7ed; color: #c2410c; }
+    .chip-count.removed { background: #f1f5f9; color: #64748b; }
+    .chip-count.unchanged { background: #f0fdf4; color: #15803d; }
+    .group-label { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin: 6px 0 12px; }
+
     .unchanged { margin-top: 18px; }
     .unchanged > summary { cursor: pointer; color: var(--slate); font-size: 14px; font-weight: 600; }
     .unchanged-note { font-size: 12.5px; color: var(--slate); margin: 8px 0 4px; }
@@ -3060,16 +3069,40 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '  </div>';
         html += '</details>';
 
+        // Count chips
+        var chips = '';
+        if (hd.new_count) chips += '<span class="chip-count new">' + hd.new_count + ' New</span>';
+        if (hd.modified_count) chips += '<span class="chip-count rewritten">' + hd.modified_count + ' Rewritten</span>';
+        if (hd.removed_count) chips += '<span class="chip-count removed">' + hd.removed_count + ' Removed</span>';
+        if (hd.unchanged_count) chips += '<span class="chip-count unchanged">' + hd.unchanged_count + ' Unchanged</span>';
+        if (chips) html += '<div class="chip-counts">' + chips + '</div>';
+
+        // New + Rewritten: open, sorted by score (the signal)
         if (data.risks.length) {
+            html += '<div class="group-label">What changed &middot; new and rewritten risks</div>';
             data.risks.forEach(function(r) { html += renderCard(r); });
         } else {
-            html += '<div class="card"><div class="note">No changed risks were detected between these two years. Most of the filing is unchanged.</div></div>';
+            html += '<div class="card"><div class="note">No new or rewritten risks were detected between these two years. Most of the filing is unchanged.</div></div>';
         }
+
+        // Removed: collapsed
+        var rem = data.removed || [];
+        if (rem.length) {
+            html += '<details class="unchanged"><summary>' + rem.length + ' risk' + (rem.length === 1 ? '' : 's') + ' removed from last year</summary>';
+            html += '<div class="unchanged-note">These appeared last year but are gone this year. That can mean the risk eased, or that it is being downplayed. Click any to read the prior text.</div>';
+            rem.forEach(function(u) {
+                html += '<details class="unc-item"><summary>' + esc(u.title) + '</summary>'
+                     +  '<div class="unc-body">' + esc(u.body || 'No text available.') + '</div></details>';
+            });
+            html += '</details>';
+        }
+
+        // Unchanged: collapsed
         var unc = data.unchanged || [];
         if (unc.length) {
             html += '<details class="unchanged"><summary>' + unc.length + ' risks unchanged from last year (no signal)</summary>';
             html += '<div class="unchanged-note">These use the same language as last year, so there is no change signal. Click any to read the full text.</div>';
-            unc.forEach(function(u, i) {
+            unc.forEach(function(u) {
                 html += '<details class="unc-item"><summary>' + esc(u.title) + '</summary>'
                      +  '<div class="unc-body">' + esc(u.body || 'No text available.') + '</div></details>';
             });
@@ -3401,23 +3434,26 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             scoring = run_scoring(change_report, verbose=False)
 
             # ─── Serialize into Option A shape ───
-            changed, unchanged = [], []
+            def _unc_obj(card, classification):
+                body = ''
+                if classification is not None:
+                    body = getattr(classification, 'current_body', '') or getattr(classification, 'prior_body', '') or ''
+                title = card['title'].strip()
+                if not title:
+                    snippet = body.strip().split('. ')[0][:80]
+                    title = (snippet + '...') if snippet else 'Untitled risk'
+                return {'title': title, 'body': body[:6000]}
+
+            changed, removed, unchanged = [], [], []
             for i, r in enumerate(scoring.risk_scores):
                 classification = change_report.classifications[i] if i < len(change_report.classifications) else None
                 card = serialize_risk(r, classification)
                 if r.status == RiskChangeStatus.UNCHANGED:
-                    body = ''
-                    if classification is not None:
-                        body = getattr(classification, 'current_body', '') or getattr(classification, 'prior_body', '') or ''
-                    title = card['title'].strip()
-                    if not title:
-                        # Fall back to the first sentence of the body when the parser
-                        # produced no title.
-                        snippet = body.strip().split('. ')[0][:80]
-                        title = (snippet + '...') if snippet else 'Untitled risk'
-                    unchanged.append({'title': title, 'body': body[:6000]})
+                    unchanged.append(_unc_obj(card, classification))
+                elif r.status == RiskChangeStatus.REMOVED:
+                    removed.append(_unc_obj(card, classification))
                 else:
-                    changed.append(card)
+                    changed.append(card)   # NEW and MODIFIED (Rewritten)
 
             changed.sort(key=lambda c: c['score'], reverse=True)
             headline = build_headline(scoring, current_year, prior_year)
@@ -3437,6 +3473,7 @@ class ERPSAHandler(BaseHTTPRequestHandler):
                 'prior_year': prior_year,
                 'headline': headline,
                 'risks': changed,
+                'removed': removed,
                 'unchanged': unchanged,
                 'fundamentals': fundamentals,
             }
