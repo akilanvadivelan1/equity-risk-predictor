@@ -1861,12 +1861,53 @@ def build_combined_verdict(headline: Dict, fundamentals: Dict) -> Dict:
 # HTML Templates
 # =========================================================
 
+SITE_URL = os.environ.get('SITE_URL', 'https://risks-radar.com')
+
+# Radar-logo favicon as an inline SVG data URI (shows in the browser tab).
+FAVICON_TAG = (
+    '<link rel="icon" href="data:image/svg+xml,'
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
+    "%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%232563eb' stroke-width='2' opacity='0.35'/%3E"
+    "%3Ccircle cx='16' cy='16' r='8.5' fill='none' stroke='%232563eb' stroke-width='2' opacity='0.6'/%3E"
+    "%3Ccircle cx='16' cy='16' r='2.6' fill='%23dc2626'/%3E"
+    "%3Cline x1='16' y1='16' x2='27' y2='6.5' stroke='%232563eb' stroke-width='2' stroke-linecap='round'/%3E"
+    '%3C/svg%3E">'
+)
+
+# Optional analytics snippet. Inert until you set ANALYTICS_SNIPPET (for example
+# a Cloudflare Web Analytics or GA4 <script> tag) via the environment.
+ANALYTICS_SNIPPET = os.environ.get('ANALYTICS_SNIPPET', '')
+
+
+def head_meta(title: str, description: str, path: str = '/') -> str:
+    """Favicon + Open Graph + Twitter card tags + analytics, for a page head."""
+    url = SITE_URL.rstrip('/') + path
+    t = title.replace('"', '')
+    d = description.replace('"', '')
+    return (
+        f'{FAVICON_TAG}\n'
+        f'<meta name="description" content="{d}">\n'
+        f'<meta property="og:type" content="website">\n'
+        f'<meta property="og:site_name" content="S&amp;P 500 Risk Radar">\n'
+        f'<meta property="og:title" content="{t}">\n'
+        f'<meta property="og:description" content="{d}">\n'
+        f'<meta property="og:url" content="{url}">\n'
+        f'<meta name="twitter:card" content="summary_large_image">\n'
+        f'<meta name="twitter:title" content="{t}">\n'
+        f'<meta name="twitter:description" content="{d}">\n'
+        f'{ANALYTICS_SNIPPET}'
+    )
+
+
 HOME_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>S&amp;P 500 Risk Radar</title>
+<title>S&amp;P 500 Risk Radar, read the warning signs in company filings</title>
+<!-- HEAD_META -->
+<meta name="_desc" content="S&amp;P 500 Risk Radar reads the risk warnings companies bury in their filings and tracks their financial health, so you can see the signals before the stock price falls.">
+
 <style>
     :root {
         --bg: #ffffff;
@@ -2641,7 +2682,8 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Analyze - S&amp;P 500 Risk Radar</title>
+<title>Analyze a company, S&amp;P 500 Risk Radar</title>
+<!-- HEAD_META -->
 <style>
     :root {
         --bg: #ffffff; --bg-alt: #f7f9fc; --navy: #0b1b34; --ink: #0f172a;
@@ -2702,6 +2744,10 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .result-head .co { font-size: 24px; font-weight: 800; letter-spacing: -0.4px; }
     .result-head .co .tk { color: var(--accent); }
     .result-head .years { color: var(--slate); font-size: 14px; margin-top: 4px; }
+    .co-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+    .sharebar { display: flex; gap: 8px; flex-wrap: wrap; }
+    .share-btn { font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--slate); text-decoration: none; cursor: pointer; white-space: nowrap; }
+    .share-btn:hover { border-color: var(--accent); color: var(--accent); }
 
     .signal { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 26px; box-shadow: var(--shadow); margin-bottom: 22px; }
     .signal .lbl { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin-bottom: 12px; }
@@ -3079,6 +3125,29 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         return d.innerHTML;
     }
 
+    function shareBar(ticker, company) {
+        var url = location.origin + '/analyze?t=' + encodeURIComponent(ticker);
+        var text = company + ' (' + ticker + ') risk analysis on S&P 500 Risk Radar';
+        var x = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(text) + '&url=' + encodeURIComponent(url);
+        var li = 'https://www.linkedin.com/sharing/share-offsite/?url=' + encodeURIComponent(url);
+        var s = '<div class="sharebar">';
+        s += '<a class="share-btn" href="' + x + '" target="_blank" rel="noopener" title="Share on X">Share on X</a>';
+        s += '<a class="share-btn" href="' + li + '" target="_blank" rel="noopener" title="Share on LinkedIn">LinkedIn</a>';
+        s += '<button class="share-btn copy" onclick="copyLink(this, \\'' + encodeURIComponent(url) + '\\')">Copy link</button>';
+        s += '</div>';
+        return s;
+    }
+
+    function copyLink(btn, encodedUrl) {
+        var url = decodeURIComponent(encodedUrl);
+        var done = function() { var o = btn.textContent; btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = o; }, 1500); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(done).catch(function(){ window.prompt('Copy this link', url); });
+        } else {
+            window.prompt('Copy this link', url);
+        }
+    }
+
     function render(data) {
         var band = data.headline.band;
         var f = data.fundamentals || {};
@@ -3088,12 +3157,19 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         var hd = data.headline;
         var vd = data.verdict || {};
 
+        // Update the browser tab title and the address bar to this company.
+        document.title = data.ticker + ' risk analysis, S&P 500 Risk Radar';
+        try { history.replaceState(null, '', '/analyze?t=' + encodeURIComponent(data.ticker)); } catch (e) {}
+
         // ══════════ OVERALL SUMMARY (distinct container) ══════════
         html += '<div class="overall">';
         html += '  <div class="overall-label">Overall summary</div>';
         html += '  <div class="result-head">';
-        html += '    <div class="co"><span class="tk">' + esc(data.ticker) + '</span> &mdash; ' + esc(data.company) + '</div>';
-        html += '    <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div>';
+        html += '    <div class="co-row">';
+        html += '      <div><div class="co"><span class="tk">' + esc(data.ticker) + '</span> &mdash; ' + esc(data.company) + '</div>';
+        html += '      <div class="years">Showing the two most recent filings we have: ' + esc(data.current_year) + ' and ' + esc(data.prior_year) + '.</div></div>';
+        html += '      ' + shareBar(data.ticker, data.company);
+        html += '    </div>';
         html += '  </div>';
 
         // Combined verdict banner (words + numbers together)
@@ -3389,7 +3465,8 @@ COMPARE_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Compare - S&amp;P 500 Risk Radar</title>
+<title>Compare two companies, S&amp;P 500 Risk Radar</title>
+<!-- HEAD_META -->
 <style>
     :root {
         --bg: #ffffff; --bg-alt: #f7f9fc; --navy: #0b1b34; --ink: #0f172a;
@@ -3953,11 +4030,35 @@ class ERPSAHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == '/' or path == '':
-            self._serve_html(HOME_PAGE)
+            meta = head_meta(
+                'S&P 500 Risk Radar',
+                'We read the warning signs companies bury in their filings and track their financial health, so you can see the signals before the stock price falls.',
+                '/')
+            self._serve_html(HOME_PAGE.replace('<!-- HEAD_META -->', meta))
         elif path == '/analyze':
-            self._serve_html(ANALYZE_PAGE)
+            params = parse_qs(parsed.query)
+            t = params.get('t', [''])[0].strip().upper()
+            page = ANALYZE_PAGE
+            if t:
+                # Server-render a per-company title + OG so shared links and
+                # crawlers see the right preview (JS runs too late for them).
+                name = get_company_name_from_s3(t, list_s3_years_for_ticker(t)[0]) if list_s3_years_for_ticker(t) else t
+                title = f"{t} risk analysis, S&amp;P 500 Risk Radar"
+                desc = (f"How {name} ({t}) describes its risks this year versus last, "
+                        f"and how its financial health is trending, from S&amp;P 500 Risk Radar.")
+                page = page.replace('<title>Analyze a company, S&amp;P 500 Risk Radar</title>',
+                                    f'<title>{title}</title>')
+                meta = head_meta(title, desc, f'/analyze?t={t}')
+            else:
+                meta = head_meta('Analyze a company, S&P 500 Risk Radar',
+                                 'Enter an S&P 500 company and see the risk language in its filings and its financial health, side by side.',
+                                 '/analyze')
+            self._serve_html(page.replace('<!-- HEAD_META -->', meta))
         elif path == '/compare':
-            self._serve_html(COMPARE_PAGE)
+            meta = head_meta('Compare two companies, S&P 500 Risk Radar',
+                             'Put two S&P 500 companies side by side and see which is trending better on risk language and financial health.',
+                             '/compare')
+            self._serve_html(COMPARE_PAGE.replace('<!-- HEAD_META -->', meta))
         elif path == '/api/lookup':
             self._handle_lookup(parsed)
         elif path == '/api/companies':
