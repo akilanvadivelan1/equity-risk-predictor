@@ -48,6 +48,25 @@ SEC_HEADERS = {
 _filing_cache: Dict[str, str] = {}
 
 
+def _get_ga_tag() -> str:
+    """
+    Return the Google Analytics tracking snippet if GA_MEASUREMENT_ID is set.
+    Otherwise returns an empty string (no tracking).
+
+    Set the GA_MEASUREMENT_ID environment variable to your GA4 ID (G-XXXXXXXXXX).
+    """
+    ga_id = os.environ.get('GA_MEASUREMENT_ID', '').strip()
+    if not ga_id:
+        return ''
+    return f'''<script async src="https://www.googletagmanager.com/gtag/js?id={ga_id}"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){{dataLayer.push(arguments);}}
+      gtag('js', new Date());
+      gtag('config', '{ga_id}');
+    </script>'''
+
+
 def get_company_cik(ticker: str) -> Optional[str]:
     """Look up company CIK number from ticker."""
     url = 'https://www.sec.gov/files/company_tickers.json'
@@ -1072,6 +1091,7 @@ HOME_PAGE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ERPSA - Equity Risk Predictor</title>
+    __GA_TAG__
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
@@ -1168,6 +1188,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ERPSA - Analyze</title>
+    __GA_TAG__
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; min-height: 100vh; }
@@ -1680,6 +1701,8 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _serve_html(self, html):
+        # Inject Google Analytics tag if configured
+        html = html.replace('__GA_TAG__', _get_ga_tag())
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
