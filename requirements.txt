@@ -10,6 +10,9 @@ beautifulsoup4>=4.12.0
 # PostgreSQL database (for filing storage)
 psycopg2-binary>=2.9.0
 
+# AWS S3 (for storing extracted risk-factor text)
+boto3>=1.34.0
+
 # Future: NLP/Sentiment (uncomment when needed)
 # transformers>=4.30.0
 # torch>=2.0.0

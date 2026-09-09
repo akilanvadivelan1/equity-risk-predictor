@@ -35,3 +35,8 @@ data/
 
 # Logs
 *.log
+
+
+# Bulk downloader local state
+progress.json
+run.log
