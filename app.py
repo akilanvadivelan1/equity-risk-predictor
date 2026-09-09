@@ -1878,7 +1878,9 @@ FAVICON_TAG = (
 #   1. Set GA_MEASUREMENT_ID to your GA4 ID (G-XXXXXXXXXX) — snippet auto-built. EASIEST.
 #   2. Set ANALYTICS_SNIPPET to a full <script> tag (Cloudflare, Plausible, etc.)
 def _build_analytics_snippet() -> str:
-    ga_id = os.environ.get('GA_MEASUREMENT_ID', '').strip()
+    # GA4 measurement ID for risks-radar.com. Public by design (visible in page
+    # source). Override with the GA_MEASUREMENT_ID env var if it ever changes.
+    ga_id = os.environ.get('GA_MEASUREMENT_ID', 'G-35LYKV9JWG').strip()
     if ga_id:
         return (
             f'<script async src="https://www.googletagmanager.com/gtag/js?id={ga_id}"></script>\n'
