@@ -21,7 +21,7 @@ import time
 import urllib.request
 import urllib.error
 from html import unescape
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse, quote
 from typing import Optional, Dict, List, Tuple
 
@@ -49,19 +49,30 @@ SEC_HEADERS = {
 _filing_cache: Dict[str, str] = {}
 
 
+_cik_map_cache: Optional[Tuple[float, Dict[str, str]]] = None
+
+
 def get_company_cik(ticker: str) -> Optional[str]:
-    """Look up company CIK number from ticker."""
+    """Look up company CIK number from ticker (SEC list cached for 24 hours)."""
+    global _cik_map_cache
+    ticker_upper = ticker.upper()
+    # SEC writes share classes with a dash (BRK-B), many sites use a dot (BRK.B).
+    ticker_upper = ticker_upper.replace('.', '-')
+    if _cik_map_cache and time.time() - _cik_map_cache[0] < 24 * 3600:
+        return _cik_map_cache[1].get(ticker_upper)
     url = 'https://www.sec.gov/files/company_tickers.json'
     req = urllib.request.Request(url, headers=SEC_HEADERS)
     try:
         resp = urllib.request.urlopen(req, timeout=15)
         data = json.loads(resp.read().decode())
-        ticker_upper = ticker.upper()
-        for entry in data.values():
-            if entry.get('ticker', '').upper() == ticker_upper:
-                return str(entry['cik_str']).zfill(10)
+        mapping = {str(e.get('ticker', '')).upper(): str(e['cik_str']).zfill(10)
+                   for e in data.values() if e.get('ticker')}
+        _cik_map_cache = (time.time(), mapping)
+        return mapping.get(ticker_upper)
     except Exception as e:
         print(f"  [EDGAR] Error looking up ticker {ticker}: {e}")
+        if _cik_map_cache:
+            return _cik_map_cache[1].get(ticker_upper)
     return None
 
 
@@ -2894,6 +2905,40 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .unc-item[open] > summary::before { content: "\\25BE "; }
     .unc-body { font-size: 13px; color: #475569; line-height: 1.7; padding: 4px 0 12px; white-space: pre-wrap; }
 
+    /* ---------- Right now: upcoming dates + daily news ---------- */
+    .sec-head.now { border-left-color: #7c3aed; }
+    .sec-head.now .sec-eyebrow { color: #7c3aed; }
+    .ev-loading { padding: 18px 20px; background: var(--bg-alt); border-radius: 12px; font-size: 13.5px; color: var(--slate); margin-bottom: 16px; }
+    .ev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .ev-tile { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; box-shadow: var(--shadow); border-top: 4px solid #7c3aed; }
+    .ev-tile.tenk { border-top-color: var(--accent); }
+    .ev-lbl { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin-bottom: 8px; }
+    .ev-date { font-size: 24px; font-weight: 800; letter-spacing: -0.4px; color: var(--ink); }
+    .ev-date.muted { color: #94a3b8; }
+    .ev-count { font-size: 13.5px; font-weight: 700; color: var(--slate); margin: 4px 0 10px; display: flex; align-items: center; gap: 8px; }
+    .ev-count.soon { color: #7c3aed; }
+    .ev-badge { font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px; padding: 3px 8px; border-radius: 999px; background: #f1f5f9; color: #64748b; }
+    .ev-badge.ok { background: #f0fdf4; color: #15803d; }
+    .ev-what { font-size: 13.5px; color: #334155; line-height: 1.55; margin-bottom: 8px; }
+    .ev-basis { font-size: 12.5px; color: var(--slate); line-height: 1.55; }
+    .ev-last { font-size: 12.5px; color: var(--slate); margin-top: 8px; }
+    .ev-last a { color: var(--accent); text-decoration: none; }
+    .ev-last a:hover { text-decoration: underline; }
+    .news { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; box-shadow: var(--shadow); margin-bottom: 16px; }
+    .news-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+    .news-title { font-size: 16px; font-weight: 800; color: var(--ink); }
+    .news-sum { font-size: 12.5px; color: var(--slate); }
+    .news-empty { font-size: 13.5px; color: var(--slate); padding: 8px 0; }
+    .news-item { display: block; padding: 12px 8px; border-top: 1px solid var(--line); text-decoration: none; border-radius: 8px; }
+    .news-item:hover { background: var(--bg-alt); }
+    .n-title { font-size: 14.5px; font-weight: 600; color: var(--ink); line-height: 1.45; }
+    .n-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; font-size: 12px; color: var(--slate); }
+    .n-meta .dot { color: #cbd5e1; }
+    .n-chip { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-right: 2px; }
+    .n-chip.neg { background: #fee2e2; color: #b91c1c; }
+    .n-chip.unc { background: #fef3c7; color: #92400e; }
+    .news-src { margin-top: 12px; font-size: 11.5px; color: #94a3b8; line-height: 1.5; }
+
     .foot-note { margin-top: 26px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--slate); line-height: 1.6; text-align: center; }
 
     /* ---------- Numbers lens (Financial Health) ---------- */
@@ -2952,6 +2997,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         .menu { display: none; }
         .search-row { flex-direction: column; }
         .lens-summary { grid-template-columns: 1fr; }
+        .ev-grid { grid-template-columns: 1fr; }
         .metric-verdict, .fin-colhead .h-verdict { display: none; }
     }
 </style>
@@ -3240,6 +3286,14 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '</div>';   // close .lens-summary
         html += '</div>';   // close .overall
 
+        // ══════════ RIGHT NOW: upcoming dates + today's news (loaded separately) ══════════
+        html += '<div class="sec-head now" id="sec-now">';
+        html += '  <div class="sec-eyebrow">Right now</div>';
+        html += '  <h3 class="sec-title">What is coming up, and what is in the news?</h3>';
+        html += '  <div class="sec-sub">The next dates the company has to report, plus today\\'s headlines that could move the stock.</div>';
+        html += '</div>';
+        html += '<div id="events-box"><div class="ev-loading">Checking the filing calendar and today\\'s headlines...</div></div>';
+
         // ══════════ SECTION 1: RISK LANGUAGE ══════════
         html += '<div class="sec-head words" id="sec-words">';
         html += '  <div class="sec-eyebrow">Risk language</div>';
@@ -3313,10 +3367,109 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
         resultsEl.innerHTML = html;
         resultsEl.classList.add('show');
+        loadEvents(data.ticker);
         // Scroll so the company header stays in view (offset for the sticky nav),
         // keeping the user in context rather than jumping to the risk panel.
         var top = resultsEl.getBoundingClientRect().top + window.pageYOffset - 72;
         window.scrollTo({ top: top, behavior: 'smooth' });
+    }
+
+    // ── Right now: next earnings, next 10-K, daily news ──
+    var eventsReq = 0;
+    async function loadEvents(ticker) {
+        var myReq = ++eventsReq;
+        var box = document.getElementById('events-box');
+        if (!box) return;
+        try {
+            var resp = await fetch('/api/events?ticker=' + encodeURIComponent(ticker));
+            var ev = await resp.json();
+            if (myReq !== eventsReq) return;   // a newer search replaced this one
+            box = document.getElementById('events-box');
+            if (!box) return;
+            if (ev.error) { box.innerHTML = '<div class="ev-loading">' + esc(ev.message || 'Not available right now.') + '</div>'; return; }
+            box.innerHTML = renderEvents(ev);
+        } catch (e) {
+            if (myReq !== eventsReq) return;
+            box = document.getElementById('events-box');
+            if (box) box.innerHTML = '<div class="ev-loading">Upcoming dates and news could not be loaded. Try again in a minute.</div>';
+        }
+    }
+
+    function safeUrl(u) { return /^https?:\\/\\//i.test(u || '') ? u : '#'; }
+
+    function countdown(days) {
+        if (days == null) return '';
+        if (days <= 0) return 'Due now';
+        if (days === 1) return 'Tomorrow';
+        if (days < 14) return 'In ' + days + ' days';
+        if (days < 60) return 'In about ' + Math.round(days / 7) + ' weeks';
+        return 'In about ' + Math.round(days / 30) + ' months';
+    }
+
+    function dateTile(kind, title, what, d, extra) {
+        var s = '<div class="ev-tile ' + kind + '">';
+        s += '<div class="ev-lbl">' + title + '</div>';
+        if (!d || !d.available) {
+            s += '<div class="ev-date muted">Not available</div>';
+            s += '<div class="ev-basis">' + esc((d && d.message) || 'We could not estimate this date.') + '</div></div>';
+            return s;
+        }
+        var soon = d.days_until != null && d.days_until <= 14;
+        s += '<div class="ev-date">' + esc(d.display) + '</div>';
+        s += '<div class="ev-count' + (soon ? ' soon' : '') + '">' + esc(countdown(d.days_until))
+          +  (d.confirmed ? ' <span class="ev-badge ok">Confirmed</span>' : ' <span class="ev-badge">Estimate</span>') + '</div>';
+        s += '<div class="ev-what">' + what + '</div>';
+        s += '<div class="ev-basis">' + esc(d.basis || '') + '</div>';
+        if (extra) s += '<div class="ev-basis">' + extra + '</div>';
+        if (d.last_display) {
+            s += '<div class="ev-last">Last one: ' + (d.last_url ? '<a href="' + esc(safeUrl(d.last_url)) + '" target="_blank" rel="noopener">' + esc(d.last_display) + ' (SEC filing)</a>' : esc(d.last_display)) + '</div>';
+        }
+        return s + '</div>';
+    }
+
+    function agoText(h) {
+        if (h < 1) return Math.max(1, Math.round(h * 60)) + ' min ago';
+        if (h < 24) return Math.round(h) + ' hr ago';
+        var dd = Math.round(h / 24);
+        return dd + (dd === 1 ? ' day ago' : ' days ago');
+    }
+
+    function renderEvents(ev) {
+        var html = '<div class="ev-grid">';
+        html += dateTile('earn', 'Next earnings report', 'The quarterly update on sales and profit. Stocks often move a lot the day after.', ev.earnings, '');
+        var fye = ev.tenk && ev.tenk.fiscal_year_end ? 'Its fiscal year ends ' + esc(ev.tenk.fiscal_year_end) + '.' : '';
+        html += dateTile('tenk', 'Next annual report (10-K)', 'The yearly filing this site reads. When it lands, the risk analysis above gets a new year to compare.', ev.tenk, fye);
+        html += '</div>';
+
+        var n = ev.news || {};
+        var items = n.items || [];
+        html += '<div class="news">';
+        html += '<div class="news-head"><div class="news-title">Today\\'s news</div>';
+        if (items.length) {
+            html += '<div class="news-sum">' + n.today_count + ' headline' + (n.today_count === 1 ? '' : 's') + ' in the last 24 hours'
+                 +  (n.flagged_count ? ', ' + n.flagged_count + ' with warning words' : '') + '</div>';
+        }
+        html += '</div>';
+        if (!items.length) {
+            html += '<div class="news-empty">' + esc(n.message || 'No recent headlines found.') + '</div>';
+        } else {
+            if (!n.today_count) html += '<div class="news-empty">No headlines in the last 24 hours. Here are the most recent ones from this week.</div>';
+            items.forEach(function(it) {
+                var chip = it.flag === 'negative' ? '<span class="n-chip neg">Negative words</span>'
+                         : (it.flag === 'uncertain' ? '<span class="n-chip unc">Uncertain words</span>' : '');
+                // title_html is escaped server-side, then only <span class="w-neg|w-unc"> is added.
+                html += '<a class="news-item" href="' + esc(safeUrl(it.link)) + '" target="_blank" rel="noopener">'
+                     +  '<div class="n-title">' + it.title_html + '</div>'
+                     +  '<div class="n-meta">' + chip + '<span>' + esc(it.source) + '</span><span class="dot">&middot;</span><span>' + esc(agoText(it.hours_ago)) + '</span></div>'
+                     +  '</a>';
+            });
+            html += '<div class="legend"><span class="w-neg">Red</span> words are negative words (like loss, decline, fraud). '
+                 +  '<span class="w-unc">Amber</span> words are uncertainty words (like may, could, uncertain). '
+                 +  'We flag the wording, we do not judge whether the news is good or bad.</div>';
+        }
+        html += '<div class="news-src">Headlines from ' + esc(n.sources || 'Yahoo Finance and Google News') + '. Dates come from SEC filings and are estimates unless marked confirmed. Not investment advice.</div>';
+        html += '</div>';
+        return html;
     }
 
     function renderCard(r, anchor) {
@@ -3919,6 +4072,367 @@ COMPARE_PAGE = """<!DOCTYPE html>
 
 
 # =========================================================
+# Upcoming events (next earnings, next 10-K) and daily news
+# =========================================================
+#
+# These are time-sensitive, so they are NOT part of the precomputed analysis
+# in S3. They are served by GET /api/events?ticker=X and cached in memory.
+#
+# Next earnings: companies file their earnings press release with the SEC as
+# an 8-K under Item 2.02 ("Results of Operations"). The same quarter's release
+# last year, plus one year, is a reliable estimate of the next date. If
+# FINNHUB_API_KEY is set, a confirmed date from Finnhub is used when available.
+#
+# Next 10-K: estimated from last year's 10-K filing date (companies file on a
+# very consistent schedule), with the fiscal year end for context.
+#
+# News: headlines from Yahoo Finance and Google News RSS, flagged with the
+# Loughran-McDonald negative and uncertainty word lists (never a positive scale).
+
+import datetime as _dt
+import xml.etree.ElementTree as _ET
+from email.utils import parsedate_to_datetime as _parse_rfc822
+
+FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY', '').strip()
+EVENTS_TTL_SECONDS = 6 * 3600      # SEC calendar data barely changes intraday
+NEWS_TTL_SECONDS = 15 * 60         # headlines refresh every 15 minutes
+
+_submissions_cache: Dict[str, Tuple[float, Dict]] = {}
+_events_cache: Dict[str, Tuple[float, Dict]] = {}
+_news_cache: Dict[str, Tuple[float, Dict]] = {}
+
+_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+           'August', 'September', 'October', 'November', 'December']
+
+
+def _fmt_date(d: _dt.date) -> str:
+    return f"{_MONTHS[d.month - 1][:3]} {d.day}, {d.year}"
+
+
+def _plus_one_year(d: _dt.date) -> _dt.date:
+    try:
+        return d.replace(year=d.year + 1)
+    except ValueError:  # Feb 29
+        return d.replace(year=d.year + 1, day=28)
+
+
+def _sec_submissions(cik: str) -> Optional[Dict]:
+    """Fetch (and cache) the SEC submissions JSON for a CIK."""
+    hit = _submissions_cache.get(cik)
+    if hit and time.time() - hit[0] < EVENTS_TTL_SECONDS:
+        return hit[1]
+    url = f'https://data.sec.gov/submissions/CIK{cik}.json'
+    try:
+        req = urllib.request.Request(url, headers=SEC_HEADERS)
+        data = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+        _submissions_cache[cik] = (time.time(), data)
+        return data
+    except Exception as e:
+        print(f"  [EVENTS] submissions fetch failed for CIK {cik}: {e}")
+        return hit[1] if hit else None
+
+
+def _recent_filings(sub: Dict) -> List[Dict]:
+    r = (sub or {}).get('filings', {}).get('recent', {})
+    forms = r.get('form', [])
+    out = []
+    for i, form in enumerate(forms):
+        def g(k):
+            v = r.get(k, [])
+            return v[i] if i < len(v) else ''
+        try:
+            d = _dt.date.fromisoformat(g('filingDate'))
+        except Exception:
+            continue
+        out.append({'form': form, 'date': d, 'items': g('items') or '',
+                    'accession': g('accessionNumber'), 'doc': g('primaryDocument')})
+    return out
+
+
+def _filing_url(cik: str, f: Dict) -> str:
+    acc = (f.get('accession') or '').replace('-', '')
+    if not acc:
+        return ''
+    base = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{acc}/"
+    return base + (f.get('doc') or '')
+
+
+def _finnhub_next_earnings(ticker: str, today: _dt.date) -> Optional[Dict]:
+    """Confirmed next earnings date from Finnhub (only if FINNHUB_API_KEY is set)."""
+    if not FINNHUB_API_KEY:
+        return None
+    url = (f"https://finnhub.io/api/v1/calendar/earnings?symbol={quote(ticker)}"
+           f"&from={today.isoformat()}&to={(today + _dt.timedelta(days=150)).isoformat()}"
+           f"&token={quote(FINNHUB_API_KEY)}")
+    try:
+        data = json.loads(urllib.request.urlopen(url, timeout=10).read().decode())
+        rows = [r for r in data.get('earningsCalendar', []) if r.get('date')]
+        rows.sort(key=lambda r: r['date'])
+        if rows:
+            hour = {'bmo': 'before the market opens', 'amc': 'after the market closes'}.get(rows[0].get('hour', ''), '')
+            return {'date': _dt.date.fromisoformat(rows[0]['date']), 'hour': hour}
+    except Exception as e:
+        print(f"  [EVENTS] Finnhub lookup failed for {ticker}: {e}")
+    return None
+
+
+def estimate_next_earnings(ticker: str, cik: str, filings: List[Dict], today: _dt.date) -> Dict:
+    releases = sorted({f['date']: f for f in filings
+                       if f['form'] in ('8-K', '8-K/A') and '2.02' in f['items']}.values(),
+                      key=lambda f: f['date'], reverse=True)
+    last = releases[0] if releases else None
+    out: Dict = {'available': False}
+    if last:
+        out['last_date'] = last['date'].isoformat()
+        out['last_display'] = _fmt_date(last['date'])
+        out['last_url'] = _filing_url(cik, last)
+
+    confirmed = _finnhub_next_earnings(ticker, today)
+    if confirmed:
+        d = confirmed['date']
+        out.update({'available': True, 'date': d.isoformat(), 'display': _fmt_date(d),
+                    'days_until': (d - today).days, 'confirmed': True,
+                    'basis': 'Confirmed date' + (f", {confirmed['hour']}" if confirmed['hour'] else '') + '.'})
+        return out
+
+    if not last:
+        out['message'] = 'We could not find past earnings releases for this company in SEC filings.'
+        return out
+
+    # Same quarter last year, plus one year.
+    candidates = sorted(((_plus_one_year(f['date']), f['date']) for f in releases
+                         if _plus_one_year(f['date']) >= today))
+    if (today - last['date']).days > 100:
+        # Overdue versus the usual quarterly rhythm, so a report is likely imminent.
+        out.update({'available': True, 'date': None, 'display': 'Any day now', 'days_until': 0,
+                    'confirmed': False,
+                    'basis': f"It has been over three months since the last report ({out['last_display']}), so the next one is due."})
+        return out
+    if candidates and (candidates[0][0] - last['date']).days >= 45:
+        d, source_date = candidates[0]
+        basis = f"Estimated from the same quarter's report last year, filed with the SEC on {_fmt_date(source_date)}."
+    else:
+        d = last['date'] + _dt.timedelta(days=91)
+        while d < today:
+            d += _dt.timedelta(days=91)
+        basis = 'Estimated as about three months after the last report.'
+    out.update({'available': True, 'date': d.isoformat(), 'display': 'Around ' + _fmt_date(d),
+                'days_until': (d - today).days, 'confirmed': False, 'basis': basis})
+    return out
+
+
+def estimate_next_10k(cik: str, sub: Dict, filings: List[Dict], today: _dt.date) -> Dict:
+    tenks = sorted((f for f in filings if f['form'] == '10-K'), key=lambda f: f['date'], reverse=True)
+    out: Dict = {'available': False}
+    fye = (sub or {}).get('fiscalYearEnd') or ''
+    if len(fye) == 4 and fye.isdigit() and 1 <= int(fye[:2]) <= 12:
+        out['fiscal_year_end'] = f"{_MONTHS[int(fye[:2]) - 1]} {int(fye[2:])}"
+    if not tenks:
+        out['message'] = 'We could not find a past 10-K for this company in SEC filings.'
+        return out
+    last = tenks[0]
+    out['last_date'] = last['date'].isoformat()
+    out['last_display'] = _fmt_date(last['date'])
+    out['last_url'] = _filing_url(cik, last)
+    d = _plus_one_year(last['date'])
+    if d < today:
+        out.update({'available': True, 'date': None, 'display': 'Any day now', 'days_until': 0,
+                    'basis': f"Last year's 10-K came out {out['last_display']}, so this year's is due."})
+    else:
+        out.update({'available': True, 'date': d.isoformat(), 'display': 'Around ' + _fmt_date(d),
+                    'days_until': (d - today).days,
+                    'basis': f"Estimated from last year's 10-K, filed {out['last_display']}. Companies file on a very steady yearly schedule."})
+    return out
+
+
+def get_upcoming_events(ticker: str) -> Dict:
+    ticker = ticker.upper()
+    hit = _events_cache.get(ticker)
+    if hit and time.time() - hit[0] < EVENTS_TTL_SECONDS:
+        return hit[1]
+    cik = get_company_cik(ticker)
+    if not cik:
+        return {'available': False, 'company': ticker,
+                'message': f"We could not find {ticker} in the SEC company list."}
+    sub = _sec_submissions(cik)
+    if not sub:
+        return {'available': False, 'company': ticker,
+                'message': 'The SEC filing calendar is not reachable right now. Please try again later.'}
+    filings = _recent_filings(sub)
+    today = _dt.date.today()
+    result = {
+        'available': True,
+        'company': sub.get('name') or ticker,
+        'earnings': estimate_next_earnings(ticker, cik, filings, today),
+        'tenk': estimate_next_10k(cik, sub, filings, today),
+    }
+    _events_cache[ticker] = (time.time(), result)
+    return result
+
+
+_COMPANY_SUFFIX_RE = re.compile(
+    r'[,.]?\s+(inc|incorporated|corp|corporation|co|com|company|companies|plc|ltd|limited|holdings?|group|n\.?v|s\.?a|lp|llc|the|/[a-z]{2,3}/?)\.?$',
+    re.IGNORECASE)
+
+
+def _short_company_name(name: str) -> str:
+    n = (name or '').strip()
+    for _ in range(3):
+        n2 = _COMPANY_SUFFIX_RE.sub('', n).strip(' ,.&')
+        if n2 == n:
+            break
+        n = n2
+    if n.lower().startswith('the '):
+        n = n[4:]
+    return n
+
+
+def _fetch_rss(url: str) -> List[Dict]:
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'})
+        root = _ET.fromstring(urllib.request.urlopen(req, timeout=10).read())
+    except Exception as e:
+        print(f"  [NEWS] feed failed {url[:70]}: {e}")
+        return []
+    items = []
+    for it in root.findall('.//item'):
+        title = unescape((it.findtext('title') or '').strip())
+        link = (it.findtext('link') or '').strip()
+        if not title or not link.startswith(('https://', 'http://')):
+            continue
+        source = (it.findtext('source') or '').strip()
+        try:
+            published = _parse_rfc822(it.findtext('pubDate') or '')
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=_dt.timezone.utc)
+        except Exception:
+            continue
+        # Google News titles end with " - Source". Move that into the source field.
+        if source and title.endswith(' - ' + source):
+            title = title[: -len(' - ' + source)].strip()
+        if not source:
+            host = urlparse(link).netloc.lower().replace('www.', '')
+            source = 'Yahoo Finance' if 'yahoo.com' in host else host
+        items.append({'title': title, 'link': link, 'source': source, 'published': published})
+    return items
+
+
+def _headline_tone(title: str) -> Dict:
+    words = [w.lower() for w in _word_re.findall(title)]
+    neg = sorted({w for w in words if w in NEGATIVE_WORDS})
+    unc = sorted({w for w in words if w in UNCERTAINTY_WORDS})
+    if neg:
+        flag = 'negative'
+    elif unc:
+        flag = 'uncertain'
+    else:
+        flag = None
+    return {'flag': flag, 'negative_words': neg, 'uncertainty_words': unc,
+            'title_html': highlight_wording([title], limit=1)[0]}
+
+
+def get_daily_news(ticker: str, company: str = '', limit: int = 8) -> Dict:
+    ticker = ticker.upper()
+    hit = _news_cache.get(ticker)
+    if hit and time.time() - hit[0] < NEWS_TTL_SECONDS:
+        return hit[1]
+
+    short = _short_company_name(company) or ticker
+    # Require market context so a company called "Target" or "Apple" does not
+    # pull in sports or recipe headlines.
+    google_q = quote(f'("{short}" OR "{ticker}") (stock OR shares OR earnings OR investors OR analyst OR SEC) when:3d')
+    items = _fetch_rss(f"https://news.google.com/rss/search?q={google_q}&hl=en-US&gl=US&ceid=US:en")
+    items += _fetch_rss(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(ticker)}&region=US&lang=en-US")
+
+    # Relevance. Tier 1: the headline carries the ticker, like "(TGT)", "NYSE:TGT",
+    # "$TGT" or "TGT stock". Tier 2: it names the company (capitalized, so not
+    # "target") AND talks about markets. Everything else is dropped.
+    # First letter must be uppercase, the rest any case (Nvidia, NVIDIA, but not "target").
+    name_re = (re.compile(r'\b' + re.escape(short[0].upper()) + '(?i:' + re.escape(short[1:]) + r")(?:'s|\b)")
+               if short and short != ticker else None)
+    t = re.escape(ticker)
+    strong_ticker = (r'\(' + t + r'\)|(?i:nyse|nasdaq|nysearca|amex|cboe):\s*' + t + r'\b|\$' + t + r'\b|\b'
+                     + t + r'(?i:\s+(?:stock|shares))\b')
+    if len(ticker) >= 3:
+        strong_ticker += r'|(?<![A-Za-z])' + t + r'(?![A-Za-z])'
+    ticker_re = re.compile(strong_ticker)
+    market_re = re.compile(r'\b(stock|stocks|shares|earnings|analysts?|investors?|revenue|sales|profit|'
+                           r'guidance|quarter|q[1-4]|dividend|buyback|ceo|cfo|upgrade|downgrade|lawsuit|'
+                           r'sec|layoffs?|acquisition|deal|merger|valuation|market)\b', re.IGNORECASE)
+
+    def _tier(title: str) -> int:
+        if ticker_re.search(title):
+            return 1
+        cleaned = re.sub(r'(?i)price\s+targets?', '', title)
+        if name_re and name_re.search(cleaned) and market_re.search(cleaned):
+            return 2
+        return 0
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    ranked = []
+    for it in items:
+        age_h = max((now - it['published']).total_seconds() / 3600.0, 0)
+        tier = _tier(it['title'])
+        if tier and age_h <= 24 * 7 and it['published'] <= now + _dt.timedelta(hours=1):
+            ranked.append((tier, age_h, it))
+    # If there are plenty of ticker-tagged headlines, use only those.
+    if sum(1 for r in ranked if r[0] == 1) >= 5:
+        ranked = [r for r in ranked if r[0] == 1]
+    ranked.sort(key=lambda r: r[1])
+
+    seen, merged = set(), []
+    for tier, age_h, it in ranked:
+        key = re.sub(r'[^a-z0-9]', '', it['title'].lower())[:70]
+        if key in seen:
+            continue
+        seen.add(key)
+        tone = _headline_tone(it['title'])
+        merged.append({
+            'title': it['title'], 'title_html': tone['title_html'], 'link': it['link'],
+            'source': it['source'], 'published': it['published'].isoformat(),
+            'hours_ago': round(age_h, 1), 'is_today': age_h <= 24,
+            'flag': tone['flag'],
+            'negative_words': tone['negative_words'], 'uncertainty_words': tone['uncertainty_words'],
+        })
+        if len(merged) >= limit:
+            break
+
+    result = {
+        'available': bool(merged), 'items': merged,
+        'today_count': sum(1 for m in merged if m['is_today']),
+        'flagged_count': sum(1 for m in merged if m['flag']),
+        'sources': 'Yahoo Finance and Google News',
+    }
+    if not merged:
+        result['message'] = 'No recent headlines found for this company.'
+    _news_cache[ticker] = (time.time(), result)
+    return result
+
+
+def build_events_payload(ticker: str) -> Dict:
+    ticker = str(ticker or '').strip().upper()
+    if not re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,9}', ticker):
+        return {'error': 'bad_ticker', 'message': 'Please provide a valid ticker.'}
+    try:
+        events = get_upcoming_events(ticker)
+    except Exception as e:
+        print(f"  [EVENTS] {ticker}: {e}")
+        events = {'available': False, 'company': ticker, 'message': 'Upcoming dates are not available right now.'}
+    try:
+        news = get_daily_news(ticker, events.get('company', ''))
+    except Exception as e:
+        print(f"  [NEWS] {ticker}: {e}")
+        news = {'available': False, 'items': [], 'message': 'News is not available right now.'}
+    return {
+        'ticker': ticker, 'as_of': _dt.date.today().isoformat(),
+        'earnings': events.get('earnings') or {'available': False, 'message': events.get('message', '')},
+        'tenk': events.get('tenk') or {'available': False, 'message': events.get('message', '')},
+        'news': news,
+    }
+
+
+# =========================================================
 # Analysis builder (shared by /api/analyze and the precompute script)
 # =========================================================
 
@@ -4080,6 +4594,9 @@ class ERPSAHandler(BaseHTTPRequestHandler):
             self._handle_lookup(parsed)
         elif path == '/api/companies':
             self._serve_json({'companies': list_companies()})
+        elif path == '/api/events':
+            params = parse_qs(parsed.query)
+            self._serve_json(build_events_payload(params.get('ticker', [''])[0]))
         else:
             self.send_response(404)
             self.end_headers()
@@ -4201,7 +4718,10 @@ class ERPSAHandler(BaseHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get('PORT', 8888))
-    server = HTTPServer(('0.0.0.0', port), ERPSAHandler)
+    # Threaded so one slow request (live analysis, news feeds) cannot block
+    # every other visitor, which shows up as 502s behind the Caddy proxy.
+    ThreadingHTTPServer.daemon_threads = True
+    server = ThreadingHTTPServer(('0.0.0.0', port), ERPSAHandler)
 
     import webbrowser
     print(f"""
