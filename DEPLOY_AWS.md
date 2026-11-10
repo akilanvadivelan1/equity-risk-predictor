@@ -15,6 +15,15 @@ text from your S3 bucket and runs the comparison live per request.
   - `RISK_S3_BUCKET` defaults to `snp500-risk-radar-10k-data`.
   - `RISK_S3_PREFIX` defaults to `risk-factors`.
   - `AWS_REGION` defaults to `us-east-1`.
+  - `FINNHUB_API_KEY` (optional). The "Right now" section estimates the next
+    earnings date from SEC filings. If you set a free key from finnhub.io, it
+    shows the confirmed date instead, marked "Confirmed".
+
+The "Right now" section (next earnings date, next 10-K, daily news) is served
+by `GET /api/events?ticker=X`. It needs outbound internet access to
+`data.sec.gov`, `news.google.com` and `feeds.finance.yahoo.com`. Results are
+cached in memory (SEC dates for 6 hours, news for 15 minutes), so this is not
+stored in S3 and needs no extra permissions.
 
 The app never needs AWS access keys baked in. On AWS it should use an
 **IAM role** attached to the service, which boto3 picks up automatically.
