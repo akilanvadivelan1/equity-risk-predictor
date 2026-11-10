@@ -2894,6 +2894,13 @@ ANALYZE_PAGE = """<!DOCTYPE html>
     .chip-count.removed { background: #f1f5f9; color: #64748b; }
     .chip-count.unchanged { background: #f0fdf4; color: #15803d; }
     .group-label { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--slate); margin: 6px 0 12px; }
+    .risk-list-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .risk-list-head .group-label { margin: 0; }
+    .sort-toggle { display: inline-flex; align-items: center; gap: 4px; background: var(--bg-alt); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+    .sort-lbl { font-size: 11.5px; font-weight: 700; color: var(--slate); padding: 0 6px 0 10px; }
+    .sort-btn { font-family: inherit; font-size: 12px; font-weight: 700; color: var(--slate); background: transparent; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+    .sort-btn:hover { color: var(--ink); }
+    .sort-btn.active, .sort-btn.active:hover { background: var(--accent); color: #ffffff; box-shadow: 0 1px 3px rgba(37,99,235,0.35); }
 
     .unchanged { margin-top: 18px; }
     .unchanged > summary { cursor: pointer; color: var(--slate); font-size: 14px; font-weight: 600; }
@@ -2998,6 +3005,7 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         .search-row { flex-direction: column; }
         .lens-summary { grid-template-columns: 1fr; }
         .ev-grid { grid-template-columns: 1fr; }
+        .sort-lbl { display: none; }
         .metric-verdict, .fin-colhead .h-verdict { display: none; }
     }
 </style>
@@ -3319,14 +3327,19 @@ ANALYZE_PAGE = """<!DOCTYPE html>
 
         // New + Rewritten: open, sorted by score (the signal). Tag the first of each.
         if (data.risks.length) {
-            html += '<div class="group-label">What changed &middot; new and rewritten risks</div>';
-            var seenNew = false, seenRew = false;
-            data.risks.forEach(function(r) {
-                var anchor = '';
-                if (r.status === 'NEW' && !seenNew) { anchor = 'first-new'; seenNew = true; }
-                else if (r.status === 'MODIFIED' && !seenRew) { anchor = 'first-rewritten'; seenRew = true; }
-                html += renderCard(r, anchor);
-            });
+            currentRisks = data.risks.slice();
+            riskOrder = 'desc';
+            html += '<div class="risk-list-head">';
+            html += '  <div class="group-label">What changed &middot; new and rewritten risks</div>';
+            if (data.risks.length > 1) {
+                html += '  <div class="sort-toggle" role="group" aria-label="Sort risks by score">';
+                html += '    <span class="sort-lbl">Sort by score</span>';
+                html += '    <button type="button" class="sort-btn active" data-order="desc" aria-pressed="true" onclick="sortRisks(\\'desc\\')">Highest risk first &#8595;</button>';
+                html += '    <button type="button" class="sort-btn" data-order="asc" aria-pressed="false" onclick="sortRisks(\\'asc\\')">Lowest risk first &#8593;</button>';
+                html += '  </div>';
+            }
+            html += '</div>';
+            html += '<div id="risk-list">' + riskListHtml(currentRisks, riskOrder) + '</div>';
         } else {
             html += '<div class="card"><div class="note">No new or rewritten risks were detected between these two years. Most of the filing is unchanged.</div></div>';
         }
@@ -3470,6 +3483,45 @@ ANALYZE_PAGE = """<!DOCTYPE html>
         html += '<div class="news-src">Headlines from ' + esc(n.sources || 'Yahoo Finance and Google News') + '. Dates come from SEC filings and are estimates unless marked confirmed. Not investment advice.</div>';
         html += '</div>';
         return html;
+    }
+
+    // ── Sorting the changed-risk cards by score ──
+    var currentRisks = [];
+    var riskOrder = 'desc';
+
+    function sortedRisks(list, order) {
+        var dir = order === 'asc' ? 1 : -1;
+        return list.slice().sort(function(a, b) {
+            var d = (a.score || 0) - (b.score || 0);
+            if (d === 0) d = (a.tone_score || 0) - (b.tone_score || 0);  // tie-break on tone
+            return d * dir;
+        });
+    }
+
+    function riskListHtml(list, order) {
+        // Anchors go on the first New / Rewritten card in the CURRENT order,
+        // so the count chips always jump to the first one the user sees.
+        var html = '', seenNew = false, seenRew = false;
+        sortedRisks(list, order).forEach(function(r) {
+            var anchor = '';
+            if (r.status === 'NEW' && !seenNew) { anchor = 'first-new'; seenNew = true; }
+            else if (r.status === 'MODIFIED' && !seenRew) { anchor = 'first-rewritten'; seenRew = true; }
+            html += renderCard(r, anchor);
+        });
+        return html;
+    }
+
+    function sortRisks(order) {
+        if (order === riskOrder) return;
+        riskOrder = order;
+        var box = document.getElementById('risk-list');
+        if (!box) return;
+        box.innerHTML = riskListHtml(currentRisks, order);
+        document.querySelectorAll('.sort-btn').forEach(function(b) {
+            var on = b.getAttribute('data-order') === order;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
     }
 
     function renderCard(r, anchor) {
